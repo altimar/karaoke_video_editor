@@ -1,0 +1,26 @@
+{
+  "name": "karaoke-video-editor",
+  "version": "1.0.0",
+  "description": "Browser-based karaoke video editor: load mp3 + lyrics, tap syllable timings, preview with effects, export MP4.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test-render.mjs && node scripts/test-parser.mjs && node scripts/test-export-quality.mjs && node scripts/test-slider-drag.mjs && node scripts/test-waveform.mjs && node scripts/test-kfn.mjs && node scripts/test-syllabify.mjs"
+  },
+  "dependencies": {
+    "mediabunny": "^1.52.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "jsdom": "^30.0.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}
