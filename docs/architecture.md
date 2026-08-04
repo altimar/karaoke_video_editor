@@ -2,54 +2,60 @@
 
 ## Обзор
 
-Браузерное приложение для создания караоке-видео. Полностью клиентское — без сервера и без ffmpeg. Пользователь загружает MP3 и текст, разбивает текст на слоги, отснимает тайминги в такт музыке, настраивает стиль и экспортирует MP4.
+Браузерное приложение для создания караоке-видео. Полностью клиентское — без сервера и без ffmpeg. Пользователь загружает MP3 и один или несколько текстов (дорожек), разбивает текст на слоги, отснимает тайминги в такт музыке, настраивает стиль каждой дорожки и экспортирует MP4.
 
 ## Поток данных
 
 ```
 MP3 ──→ AudioEngine ──→ AudioBuffer (декодированный PCM)
                           │
-Текст ──→ parseLyrics ──→ Lines[] ──→ Store (Project)
-                          │               │
-                     mergeTimings         │
-                     (перенос при         ├──→ Preview (RAF → renderFrame → canvas)
-                      редактировании)     ├──→ Timeline (canvas, drag маркеров)
-                          │               ├──→ StylePanel (контролы → store)
-                     Space → timing       └──→ Export (renderFrame кадр-за-кадром → MP4)
-                     (съёмка)
+Текст ──→ parseLyrics ──→ Lines[] ──→ TextTrack ──→ Store (Project)
+                          │             (lines +      (tracks[] + background)
+                     mergeTimings       TextStyle +     │
+                     (перенос при        rendererSettings)  ├─→ Preview (RAF → renderFrame → canvas)
+                      редактировании)    │               ├─→ Timeline (canvas, drag маркеров; полоса на дорожку)
+                          │              └─── active ──→  ├─→ StylePanel (per-track + project контролы)
+                     Space → timing                        └─→ Export (renderFrame кадр-за-кадром → MP4)
+                     (съёмка, активная дорожка)
 ```
+
+## Текстовые дорожки
+
+Проект содержит **одну или несколько независимых текстовых дорожек** (`TextTrack`). Каждая дорожка: свой текст (`lines`), свой текстовый стиль (`TextStyle`: шрифт, цвета, обводка/свечение, раскладка) и свои настройки рендерера (`rendererSettings`). Дорожки рендерятся поверх общего фона, в порядке массива, и **могут перекрываться** визуально.
+
+Ровно одна дорожка **активна** (`project.activeTrackId`) — она является целью редактирования текста, записи таймингов и перетаскивания маркеров на таймлайне. Общий фон (`Background`), разрешение, FPS и waveform живут на уровне проекта.
 
 ## Ключевой инвариант: WYSIWYG
 
-**Одна функция `renderFrame(ctx, timeMs, project)`** рисует кадр и для превью, и для экспорта. Это гарантирует, что видео = превью пиксель-в-пиксель. Не создавай раздельной логики отрисовки.
+**Одна функция `renderFrame(ctx, timeMs, project)`** рисует кадр и для превью, и для экспорта. Она рисует общий фон один раз, затем в цикле проходит по всем дорожкам и рендерит каждую своим рендерером. Это гарантирует, что видео = превью пиксель-в-пиксель. Не создавай раздельной логики отрисовки.
 
 ## Ключевой инвариант: неразмеченные слоги не рендерятся
 
-Только слоги с `startMs !== null` попадают в `buildTimings` → в кадр. Неразмеченные слоги невидимы в превью и видео, не появляются на таймлайне. Это **намеренно** — см. комментарий `!!! IMPORTANT` в `buildTimings`.
+Только слоги с `startMs !== null` попадают в `buildTimings` (для каждой дорожки отдельно) → в кадр. Неразмеченные слоги невидимы в превью и видео, не появляются на таймлайне. Это **намеренно** — см. комментарий `!!! IMPORTANT` в `buildTimings`.
 
 ## Ключевой инвариант: перенос таймингов
 
-При редактировании текста тайминги переносятся **позиционно** по глобальному плоскому индексу всех слогов песни (через границы строк). См. `docs/lyrics-and-timings.md`.
+При редактировании текста тайминги переносятся **позиционно** по глобальному плоскому индексу всех слогов **дорожки** (через границы строк), в пределах активной дорожки. См. `docs/lyrics-and-timings.md`.
 
 ## Модульная система рендереров текста
 
-Текстовый слой рендерится **модулями** — по одному на режим анимации (сейчас один: `scroller`). Каждый модуль реализует общий интерфейс `TextRenderer` и регистрируется в реестре; архитектура поддерживает добавление новых режимов. Оркестратор `render.ts` выбирает модуль по `project.style.layout` и делегирует ему отрисовку. См. `docs/text-renderers.md`.
+Текстовый слой каждой дорожки рендерится **модулями** — по одному на режим анимации (`scroller`, `classic`). Каждый модуль реализует общий интерфейс `TextRenderer` и регистрируется в реестре; архитектура поддерживает добавление новых режимов. Оркестратор `render.ts` рисует общий фон один раз, затем в цикле по дорожкам выбирает модуль по `track.style.layout` и делегирует ему отрисовку этой дорожки. См. `docs/text-renderers.md`.
 
 ## Карта файлов
 
 ```
 src/
   main.ts                  — сборка приложения, toast-система
-  types.ts                 — модели данных: Project, Style, Syllable, Line, Layout
-  state/store.ts           — мини-реактивный стор (subscribe/mutate/setProject)
+  types.ts                 — модели данных: Project, TextTrack, TextStyle, Background, Syllable, Line
+  state/store.ts           — мини-реактивный стор (subscribe/mutate/setProject) + migrateProject
   lib/
-    render.ts              — ОРКЕСТРАТОР: фон + выбор рендерера + renderFrame
+    render.ts              — ОРКЕСТРАТОР: общий фон + цикл по дорожкам + renderFrame
     audioEngine.ts         — загрузка MP3, воспроизведение, декодирование в AudioBuffer
-    timing.ts              — контроллер съёмки таймингов (Space → startMs)
+    timing.ts              — контроллер съёмки таймингов активной дорожки (Space → startMs)
     textParser.ts          — парсер текста, сериализация, mergeTimings, flatSyllables
     waveform.ts            — расчёт пиков waveform из AudioBuffer (кешируется)
     export.ts              — экспорт MP4: WebCodecs + Mediabunny, качество, прогресс
-    kfnExport.ts           — экспорт KaraFun (.kfn): бинарный контейнер + Song.ini
+    kfnExport.ts           — экспорт KaraFun (.kfn): активная дорожка → бинарный контейнер + Song.ini
     kfnImport.ts           — импорт KaraFun (.kfn): парсинг контейнера → проект + аудио
     syllabification/
       types.ts             — интерфейс Syllabifier, detectLanguage
@@ -59,16 +65,17 @@ src/
       german.ts            — для немецкого
       index.ts             — syllabifyText: детект языка + разбиение текста
     text_renderers/
-      types.ts             — интерфейс TextRenderer, RenderEnv, RenderSettingSpec
-      helpers.ts           — общие хелперы: buildTimings, layoutLine, drawSyllable
+      types.ts             — интерфейс TextRenderer, RenderEnv (одна дорожка), RenderSettingSpec
+      helpers.ts           — общие хелперы: buildTimings(lines, durationMs), layoutLine, drawSyllable
       registry.ts          — реестр рендереров, getRenderer, дефолты настроек
       scroller.ts          — режим «бегущая» (кинотитры)
+      classic.ts           — режим «классическое караоке» (фиксированные слоты)
   ui/
     controls.ts            — верхняя панель: загрузка MP3, play/pause, запись, экспорт
-    lyricsEditor.ts        — редактор текста (textarea), парсинг на лету, mergeTimings
+    lyricsEditor.ts        — редактор текста активной дорожки + переключатель дорожек (add/remove)
     preview.ts             — canvas-превью с RAF-циклом
-    timeline.ts            — таймлайн: 3 строки, маркеры, drag, waveform, playhead
-    stylePanel.ts          — панель стилей (in-place обновления, автогенерация настроек)
+    timeline.ts            — таймлайн: общая линейка + waveform + полоса маркеров на каждую дорожку
+    stylePanel.ts          — панель: per-track (шрифт/цвета/обводка/раскладка) + project (фон/FPS/разрешение)
     exportDialog.ts        — модальный диалог экспорта (выбор качества, прогресс)
 scripts/                   — Node-тесты (esbuild + fake-ctx / jsdom)
 ```

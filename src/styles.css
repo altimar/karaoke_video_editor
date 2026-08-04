@@ -135,6 +135,58 @@ button.danger {
   flex-wrap: wrap;
 }
 
+/* ---------- Track switcher ---------- */
+.track-bar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.track-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.track-tab:hover {
+  color: var(--text);
+}
+.track-tab.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.track-tab-del {
+  font-weight: 700;
+  line-height: 1;
+  padding: 0 2px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.track-tab-del:hover {
+  color: var(--danger);
+}
+.track-add {
+  padding: 4px 10px;
+  font-size: 14px;
+  line-height: 1;
+  background: var(--bg-input);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.track-add:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* ---------- Inputs ---------- */
 label.field {
   display: block;
@@ -169,6 +221,40 @@ input[type="color"] {
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 6px;
+}
+/* Compact color row: label · swatch (opens picker) · alpha slider, one line. */
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.color-label {
+  flex: 0 0 108px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.color-swatch {
+  flex: 0 0 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.color-swatch:hover {
+  border-color: var(--accent);
+}
+.color-picker-hidden {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.color-alpha {
+  flex: 1 1 auto;
+  accent-color: var(--accent);
 }
 textarea.lyrics {
   width: 100%;
@@ -280,6 +366,67 @@ textarea.lyrics {
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+/* Body: fixed left gutter (track headers) + scrollable canvas. Like an audio
+   editor — the gutter never scrolls, the timeline does. */
+.timeline-body {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+}
+.timeline-gutter {
+  flex: 0 0 110px;
+  display: flex;
+  flex-direction: column;
+  /* Keep headers aligned with the canvas border/padding. */
+  padding: 1px;
+}
+/* Spacer that lines the headers up below the ruler (mirrors RULER_H + TOP_PAD). */
+.timeline-gutter-ruler {
+  height: 30px;
+  flex: 0 0 auto;
+}
+/* Waveform header ("минус") — height mirrors WAVE_H + TOP_PAD on the canvas. */
+.timeline-wave-head {
+  height: 48px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+/* One header per track — height mirrors ROW_H + TRACK_PAD on the canvas. */
+.timeline-track-head {
+  height: 24px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  overflow: hidden;
+}
+.timeline-track-head:hover {
+  border-color: var(--accent);
+}
+.timeline-track-head.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(255, 225, 77, 0.06);
+}
+.timeline-track-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .hint {
   font-size: 11px;
@@ -318,6 +465,51 @@ textarea.lyrics {
 }
 
 /* ---------- Export modal ---------- */
+/* Format tabs (Video / KaraFun) at the top of the export dialog. */
+.export-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+}
+.export-tab {
+  flex: 1;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+.export-tab:hover {
+  color: var(--text);
+}
+.export-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.export-tab:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+/* KaraFun compatibility warnings shown in the KaraFun tab. */
+.export-warnings {
+  background: rgba(255, 180, 0, 0.08);
+  border: 1px solid rgba(255, 180, 0, 0.3);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.export-warnings-title {
+  font-size: 12px;
+  color: #ffb400;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.export-warning {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  margin-top: 3px;
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;

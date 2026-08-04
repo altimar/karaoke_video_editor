@@ -1,20 +1,30 @@
 /**
  * Style & effects panel.
  *
- * IMPORTANT: the panel is built ONCE, and individual controls are updated in
+ * Settings are split into two groups:
+ *  - PER-TRACK (font, colors, stroke/glow, layout + renderer settings): these
+ *    belong to the ACTIVE track and are rebuilt when the active track changes.
+ *  - PROJECT-LEVEL (background, resolution, FPS, waveform): shared across all
+ *    tracks, rebuilt only when their own condition (bg type) flips.
+ *
+ * IMPORTANT: each card is built ONCE, and individual controls are updated in
  * place when the store changes (via setter callbacks). We must NOT rebuild the
  * DOM on every store change, because doing so while the user is dragging a
  * range slider would destroy the element under the pointer and break the drag —
  * which was the original bug ("sliders only work on click, not drag").
+ *
+ * Per-track cards are rebuilt only when `activeTrackId` changes (not on every
+ * value tweak), so switching tracks rebinds the fields without disturbing drags
+ * within a track.
  *
  * Each field builder returns its root element plus a `set(v)` function that
  * pushes a new value into the control WITHOUT firing its change handler (so we
  * don't create feedback loops).
  */
 import { store } from '../state/store';
-import { BgType, Project, Style } from '../types';
+import { BgType, Background, Project, TextTrack, TextStyle, getActiveTrack } from '../types';
 import { invalidateBgImageCache } from '../lib/render';
-import { getRenderer } from '../lib/text_renderers/registry';
+import { getRenderer, RENDERER_LIST } from '../lib/text_renderers/registry';
 import { RenderSettingSpec } from '../lib/text_renderers/types';
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -102,6 +112,105 @@ function toHex(c: string): string {
   return '#ffffff';
 }
 
+/** Split a CSS color string into an rgb hex (`#rrggbb`) and an alpha (0..1). */
+function parseColorAlpha(c: string): { rgb: string; alpha: number } {
+  c = (c ?? '').trim();
+  const rgba = /rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,]+([\d.]+))?\s*\)/i.exec(c);
+  if (rgba) {
+    const r = parseInt(rgba[1], 10);
+    const g = parseInt(rgba[2], 10);
+    const b = parseInt(rgba[3], 10);
+    const a = rgba[4] !== undefined ? parseFloat(rgba[4]) : 1;
+    const hex = (n: number) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0');
+    return { rgb: `#${hex(r)}${hex(g)}${hex(b)}`, alpha: Math.max(0, Math.min(1, a)) };
+  }
+  if (c.startsWith('#')) {
+    let h = c.slice(1);
+    let a = 1;
+    if (h.length === 8) {
+      a = parseInt(h.slice(6, 8), 16) / 255;
+      h = h.slice(0, 6);
+    } else if (h.length === 4) {
+      a = parseInt(h[3] + h[3], 16) / 255;
+      h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    } else if (h.length === 3) {
+      h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+    }
+    return { rgb: '#' + h.slice(0, 6), alpha: a };
+  }
+  return { rgb: '#ffffff', alpha: 1 };
+}
+
+/** Reassemble rgb hex + alpha into an `rgba(r,g,b,a)` string. */
+function joinColorAlpha(rgb: string, alpha: number): string {
+  const h = rgb.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/**
+ * Compact color field on a single row: label · swatch (opens native picker) ·
+ * alpha slider. The value is a CSS color string (rgb hex or rgba()); alpha is
+ * stored within the string, so changing either control reassembles the value.
+ */
+function colorAlphaField(label: string, value: string, onChange: (v: string) => void): Field<string> {
+  const row = el('div', { className: 'color-row' });
+  row.appendChild(el('span', { text: label, className: 'color-label' }));
+
+  // Swatch: a button showing the color; a hidden native color input opens on click.
+  const swatch = el('button', { className: 'color-swatch' });
+  const picker = el('input') as HTMLInputElement;
+  picker.type = 'color';
+  picker.className = 'color-picker-hidden';
+
+  // Alpha slider.
+  const alpha = el('input') as HTMLInputElement;
+  alpha.type = 'range';
+  alpha.className = 'color-alpha';
+  alpha.min = '0';
+  alpha.max = '1';
+  alpha.step = '0.01';
+
+  // Current state (so we reassemble correctly from either control).
+  let cur = parseColorAlpha(value);
+  const renderSwatch = (): void => {
+    swatch.style.background = joinColorAlpha(cur.rgb, cur.alpha);
+  };
+  const emit = (): void => onChange(joinColorAlpha(cur.rgb, cur.alpha));
+
+  picker.value = cur.rgb;
+  alpha.value = String(cur.alpha);
+  renderSwatch();
+
+  swatch.addEventListener('click', () => picker.click());
+  picker.addEventListener('input', () => {
+    cur = { ...cur, rgb: picker.value };
+    renderSwatch();
+    emit();
+  });
+  alpha.addEventListener('input', () => {
+    cur = { ...cur, alpha: parseFloat(alpha.value) };
+    renderSwatch();
+    emit();
+  });
+
+  row.appendChild(swatch);
+  row.appendChild(picker);
+  row.appendChild(alpha);
+  return {
+    root: row,
+    set: (v) => {
+      const parsed = parseColorAlpha(v);
+      cur = parsed;
+      if (picker.value !== parsed.rgb) picker.value = parsed.rgb;
+      if (parseFloat(alpha.value) !== parsed.alpha) alpha.value = String(parsed.alpha);
+      renderSwatch();
+    },
+  };
+}
+
 function selectField(
   label: string,
   options: [string, string][],
@@ -130,34 +239,40 @@ function selectField(
 export function createStylePanel(): { root: HTMLElement } {
   const root = el('div');
 
-  // Build the static skeleton once: cards with placeholders we can swap content
-  // into depending on conditional state (bg type, layout). Conditional blocks
-  // are rebuilt only when their condition changes — never on plain value edits.
-  const baseCardEl = el('div', { className: 'card' });
-  const strokeCardEl = el('div', { className: 'card' });
+  // Card containers. Per-track cards live in a host that we repopulate on track
+  // switch; project-level cards (bg, layout/export) are stable.
+  const trackHost = el('div');
   const bgCardEl = el('div', { className: 'card' });
   const layoutCardEl = el('div', { className: 'card' });
 
-  // References to all value-bearing fields, so the store subscription can sync them.
-  const fields: Array<{ get: (s: Style, p: Project) => string | number | boolean; field: Field<unknown> }> = [];
+  // Per-track field references. Re-collected each time the active track changes.
+  let trackFields: Array<{ get: (s: TextStyle, t: TextTrack) => string | number | boolean; field: Field<unknown> }> = [];
+  // Project-level field references (resolution/fps/waveform + bg). Stable across
+  // track switches; cleared & repopulated only when their own card rebuilds.
+  const projFields: Array<{ get: (p: Project) => string | number | boolean; field: Field<unknown> }> = [];
 
   // Track the last-seen condition values for conditional blocks, so we only
   // rebuild them when the condition actually flips.
   let lastBgType: string | null = null;
+  let lastActiveTrackId: string | null = null;
   let lastLayout: string | null = null;
 
-  function mutate(fn: (s: Style) => void): void {
-    store.mutate((p) => fn(p.style));
+  /** Mutate the active track's text style. */
+  function mutateStyle(fn: (s: TextStyle) => void): void {
+    store.mutate((p) => fn(getActiveTrack(p).style));
+  }
+  /** Mutate the shared background. */
+  function mutateBg(fn: (b: Background) => void): void {
+    store.mutate((p) => fn(p.background));
   }
 
   /**
-   * Build a control for one renderer setting, wired to project.rendererSettings.
-   * Number specs → slider; boolean specs → checkbox. Returns a Field so it syncs
-   * in place on store changes (no DOM rebuild while dragging).
+   * Build a control for one renderer setting, wired to the active track's
+   * rendererSettings. Number specs → slider; boolean specs → checkbox.
    */
-  function buildRendererSettingControl(rendererId: string, spec: RenderSettingSpec, p: Project): Field<unknown> {
+  function buildRendererSettingControl(rendererId: string, spec: RenderSettingSpec, track: TextTrack): Field<unknown> {
     const read = (): number | boolean => {
-      const v = p.rendererSettings?.[rendererId]?.[spec.key];
+      const v = track.rendererSettings?.[rendererId]?.[spec.key];
       return v !== undefined ? v : spec.default;
     };
     if (spec.kind === 'boolean') {
@@ -166,11 +281,11 @@ export function createStylePanel(): { root: HTMLElement } {
       const cb = el('input') as HTMLInputElement;
       cb.type = 'checkbox';
       cb.checked = Boolean(read());
-      cb.addEventListener('change', () => store.mutate((pr) => setSetting(pr, rendererId, spec.key, cb.checked)));
+      cb.addEventListener('change', () => store.mutate((pr) => setSetting(getActiveTrack(pr), rendererId, spec.key, cb.checked)));
       lab.appendChild(cb);
-      fields.push({
-        get: (_st, pr) => {
-          const v = pr.rendererSettings?.[rendererId]?.[spec.key];
+      trackFields.push({
+        get: (_st, t) => {
+          const v = t.rendererSettings?.[rendererId]?.[spec.key];
           return v !== undefined ? v : spec.default;
         },
         field: {
@@ -187,11 +302,11 @@ export function createStylePanel(): { root: HTMLElement } {
     const max = spec.max ?? 100;
     const step = spec.step ?? 1;
     const f = numberField(spec.label, Number(read()), min, max, step, (v) =>
-      store.mutate((pr) => setSetting(pr, rendererId, spec.key, v)),
+      store.mutate((pr) => setSetting(getActiveTrack(pr), rendererId, spec.key, v)),
     );
-    fields.push({
-      get: (_st, pr) => {
-        const v = pr.rendererSettings?.[rendererId]?.[spec.key];
+    trackFields.push({
+      get: (_st, t) => {
+        const v = t.rendererSettings?.[rendererId]?.[spec.key];
         return v !== undefined ? v : spec.default;
       },
       field: f as Field<unknown>,
@@ -199,16 +314,17 @@ export function createStylePanel(): { root: HTMLElement } {
     return f as Field<unknown>;
   }
 
-  /** Ensure the settings object exists, then set one key. */
-  function setSetting(pr: Project, rendererId: string, key: string, value: number | boolean): void {
-    if (!pr.rendererSettings) pr.rendererSettings = {};
-    if (!pr.rendererSettings[rendererId]) pr.rendererSettings[rendererId] = {};
-    pr.rendererSettings[rendererId][key] = value;
+  /** Ensure the settings object exists on the track, then set one key. */
+  function setSetting(track: TextTrack, rendererId: string, key: string, value: number | boolean): void {
+    if (!track.rendererSettings) track.rendererSettings = {};
+    if (!track.rendererSettings[rendererId]) track.rendererSettings[rendererId] = {};
+    track.rendererSettings[rendererId][key] = value;
   }
 
-  function buildBase(s: Style): void {
-    baseCardEl.innerHTML = '';
-    baseCardEl.appendChild(el('h2', { text: 'Текст' }));
+  // ---------- PER-TRACK CARDS ----------
+
+  function buildBase(s: TextStyle): HTMLElement {
+    const card = el('div', { className: 'card' });
 
     const ffLab = el('label', { className: 'field' });
     ffLab.appendChild(el('span', { text: 'Шрифт' }));
@@ -217,9 +333,9 @@ export function createStylePanel(): { root: HTMLElement } {
     let focused = false;
     ff.addEventListener('focus', () => (focused = true));
     ff.addEventListener('blur', () => (focused = false));
-    ff.addEventListener('input', () => mutate((x) => (x.fontFamily = ff.value)));
+    ff.addEventListener('input', () => mutateStyle((x) => (x.fontFamily = ff.value)));
     ffLab.appendChild(ff);
-    fields.push({
+    trackFields.push({
       get: (st) => st.fontFamily,
       field: {
         root: ffLab,
@@ -228,69 +344,130 @@ export function createStylePanel(): { root: HTMLElement } {
         },
       },
     });
-    baseCardEl.appendChild(ffLab);
+    card.appendChild(ffLab);
 
-    const addNum = (label: string, min: number, max: number, step: number, get: (s: Style) => number, set: (s: Style, v: number) => void): void => {
-      const f = numberField(label, get(s), min, max, step, (v) => mutate((x) => set(x, v)));
-      fields.push({ get: (st) => get(st), field: f as Field<unknown> });
-      baseCardEl.appendChild(f.root);
+    const addNum = (label: string, min: number, max: number, step: number, get: (s: TextStyle) => number, set: (s: TextStyle, v: number) => void): void => {
+      const f = numberField(label, get(s), min, max, step, (v) => mutateStyle((x) => set(x, v)));
+      trackFields.push({ get: (st) => get(st), field: f as Field<unknown> });
+      card.appendChild(f.root);
     };
     addNum('Размер', 16, 200, 1, (st) => st.fontSize, (st, v) => (st.fontSize = v));
     addNum('Межстрочный', 0.8, 3, 0.05, (st) => st.lineHeight, (st, v) => (st.lineHeight = v));
 
-    const align = selectField('Выравнивание', [['left', 'Слева'], ['center', 'Центр'], ['right', 'Справа']], s.textAlign, (v) => mutate((x) => (x.textAlign = v as Style['textAlign'])));
-    fields.push({ get: (st) => st.textAlign, field: align as Field<unknown> });
-    baseCardEl.appendChild(align.root);
+    const align = selectField('Выравнивание', [['left', 'Слева'], ['center', 'Центр'], ['right', 'Справа']], s.textAlign, (v) => mutateStyle((x) => (x.textAlign = v as TextStyle['textAlign'])));
+    trackFields.push({ get: (st) => st.textAlign, field: align as Field<unknown> });
+    card.appendChild(align.root);
 
-    const colors = el('div', { className: 'row2' });
-    const cb = colorField('Цвет базовый', s.colorBase, (v) => mutate((x) => (x.colorBase = v)));
-    const ch = colorField('Цвет заливки', s.colorHighlight, (v) => mutate((x) => (x.colorHighlight = v)));
-    fields.push({ get: (st) => st.colorBase, field: cb as Field<unknown> });
-    fields.push({ get: (st) => st.colorHighlight, field: ch as Field<unknown> });
-    colors.appendChild(cb.root);
-    colors.appendChild(ch.root);
-    baseCardEl.appendChild(colors);
+    const cb = colorAlphaField('Заливка неакт.', s.colorBase, (v) => mutateStyle((x) => (x.colorBase = v)));
+    const ch = colorAlphaField('Заливка актив.', s.colorHighlight, (v) => mutateStyle((x) => (x.colorHighlight = v)));
+    trackFields.push({ get: (st) => st.colorBase, field: cb as Field<unknown> });
+    trackFields.push({ get: (st) => st.colorHighlight, field: ch as Field<unknown> });
+    card.appendChild(cb.root);
+    card.appendChild(ch.root);
 
     const weights = el('div', { className: 'row2' });
-    const wf = selectField('Начертание', [['400', 'Обычный'], ['600', 'Полужирный'], ['700', 'Жирный'], ['900', 'Чёрный']], String(s.fontWeight), (v) => mutate((x) => (x.fontWeight = parseInt(v, 10))));
-    fields.push({ get: (st) => String(st.fontWeight), field: wf as Field<unknown> });
+    const wf = selectField('Начертание', [['400', 'Обычный'], ['600', 'Полужирный'], ['700', 'Жирный'], ['900', 'Чёрный']], String(s.fontWeight), (v) => mutateStyle((x) => (x.fontWeight = parseInt(v, 10))));
+    trackFields.push({ get: (st) => String(st.fontWeight), field: wf as Field<unknown> });
     weights.appendChild(wf.root);
-    baseCardEl.appendChild(weights);
+    card.appendChild(weights);
+
+    return card;
   }
 
-  function buildStroke(s: Style): void {
-    strokeCardEl.innerHTML = '';
-    strokeCardEl.appendChild(el('h2', { text: 'Обводка и свечение' }));
-    const sw = numberField('Обводка', s.strokeWidth, 0, 20, 0.5, (v) => mutate((x) => (x.strokeWidth = v)));
-    fields.push({ get: (st) => st.strokeWidth, field: sw as Field<unknown> });
-    strokeCardEl.appendChild(sw.root);
-    const sc = colorField('Цвет обводки', s.strokeColor, (v) => mutate((x) => (x.strokeColor = v)));
-    fields.push({ get: (st) => st.strokeColor, field: sc as Field<unknown> });
-    strokeCardEl.appendChild(sc.root);
-    const gb = numberField('Свечение', s.glowBlur, 0, 80, 1, (v) => mutate((x) => (x.glowBlur = v)));
-    fields.push({ get: (st) => st.glowBlur, field: gb as Field<unknown> });
-    strokeCardEl.appendChild(gb.root);
-    const gc = colorField('Цвет свечения', s.glowColor, (v) => mutate((x) => (x.glowColor = v)));
-    fields.push({ get: (st) => st.glowColor, field: gc as Field<unknown> });
-    strokeCardEl.appendChild(gc.root);
+  function buildStroke(s: TextStyle): HTMLElement {
+    const card = el('div', { className: 'card' });
+    card.appendChild(el('h2', { text: 'Обводка и свечение' }));
+    const sw = numberField('Обводка', s.strokeWidth, 0, 20, 0.5, (v) => mutateStyle((x) => (x.strokeWidth = v)));
+    trackFields.push({ get: (st) => st.strokeWidth, field: sw as Field<unknown> });
+    card.appendChild(sw.root);
+    const sca = colorAlphaField('Граница актив.', s.strokeColorActive, (v) => mutateStyle((x) => (x.strokeColorActive = v)));
+    const sci = colorAlphaField('Граница неакт.', s.strokeColorInactive, (v) => mutateStyle((x) => (x.strokeColorInactive = v)));
+    trackFields.push({ get: (st) => st.strokeColorActive, field: sca as Field<unknown> });
+    trackFields.push({ get: (st) => st.strokeColorInactive, field: sci as Field<unknown> });
+    card.appendChild(sca.root);
+    card.appendChild(sci.root);
+    const gb = numberField('Свечение', s.glowBlur, 0, 80, 1, (v) => mutateStyle((x) => (x.glowBlur = v)));
+    trackFields.push({ get: (st) => st.glowBlur, field: gb as Field<unknown> });
+    card.appendChild(gb.root);
+    const gc = colorAlphaField('Цвет свечения', s.glowColor, (v) => mutateStyle((x) => (x.glowColor = v)));
+    trackFields.push({ get: (st) => st.glowColor, field: gc as Field<unknown> });
+    card.appendChild(gc.root);
+    return card;
   }
 
-  function buildBg(s: Style): void {
+  function buildLayout(track: TextTrack): HTMLElement {
+    const card = el('div', { className: 'card' });
+    card.appendChild(el('h2', { text: 'Раскладка текста' }));
+    const s = track.style;
+    // Mode selector: choose which animation mode this track uses.
+    const layoutSel = selectField(
+      'Режим',
+      RENDERER_LIST.map((r) => [r.id, r.label] as [string, string]),
+      s.layout,
+      (v) => mutateStyle((x) => (x.layout = v as TextStyle['layout'])),
+    );
+    trackFields.push({ get: (st) => st.layout, field: layoutSel as Field<unknown> });
+    card.appendChild(layoutSel.root);
+    // The active renderer's setting controls (auto-generated from its spec).
+    const renderer = getRenderer(s.layout);
+    for (const spec of renderer.settings) {
+      card.appendChild(buildRendererSettingControl(renderer.id, spec, track).root);
+    }
+    lastLayout = s.layout;
+    return card;
+  }
+
+  /** Rebuild all per-track cards for the current active track. */
+  function rebuildTrackCards(): void {
+    const project = store.getProject();
+    const track = getActiveTrack(project);
+    trackFields = [];
+    trackHost.innerHTML = '';
+    const header = el('div', { className: 'card' });
+    header.appendChild(el('h2', { text: 'Текстовая дорожка' }));
+    const nameLab = el('label', { className: 'field' });
+    nameLab.appendChild(el('span', { text: 'Название дорожки' }));
+    const nameInput = el('input') as HTMLInputElement;
+    nameInput.type = 'text';
+    nameInput.value = track.name;
+    nameInput.addEventListener('input', () => store.mutate((p) => (getActiveTrack(p).name = nameInput.value)));
+    nameLab.appendChild(nameInput);
+    trackFields.push({
+      get: (_st, t) => t.name,
+      field: {
+        root: nameLab,
+        set: (v) => {
+          if (document.activeElement !== nameInput && nameInput.value !== v) nameInput.value = String(v);
+        },
+      },
+    });
+    header.appendChild(nameLab);
+    trackHost.appendChild(header);
+
+    trackHost.appendChild(buildBase(track.style));
+    trackHost.appendChild(buildStroke(track.style));
+    trackHost.appendChild(buildLayout(track));
+    lastActiveTrackId = project.activeTrackId;
+  }
+
+  // ---------- PROJECT-LEVEL CARDS ----------
+
+  function buildBg(bg: Background): void {
     bgCardEl.innerHTML = '';
-    bgCardEl.appendChild(el('h2', { text: 'Фон' }));
-    const typeSel = selectField('Тип фона', [['color', 'Цвет'], ['gradient', 'Градиент'], ['image', 'Картинка']], s.bgType, (v) => mutate((x) => (x.bgType = v as BgType)));
-    fields.push({ get: (st) => st.bgType, field: typeSel as Field<unknown> });
+    bgCardEl.appendChild(el('h2', { text: 'Фон (общий)' }));
+    const typeSel = selectField('Тип фона', [['color', 'Цвет'], ['gradient', 'Градиент'], ['image', 'Картинка']], bg.bgType, (v) => mutateBg((x) => (x.bgType = v as BgType)));
+    projFields.push({ get: (p) => p.background.bgType, field: typeSel as Field<unknown> });
     bgCardEl.appendChild(typeSel.root);
 
-    if (s.bgType === 'color') {
-      const f = colorField('Цвет фона', s.bgColor, (v) => mutate((x) => (x.bgColor = v)));
-      fields.push({ get: (st) => st.bgColor, field: f as Field<unknown> });
+    if (bg.bgType === 'color') {
+      const f = colorField('Цвет фона', bg.bgColor, (v) => mutateBg((x) => (x.bgColor = v)));
+      projFields.push({ get: (p) => p.background.bgColor, field: f as Field<unknown> });
       bgCardEl.appendChild(f.root);
-    } else if (s.bgType === 'gradient') {
-      const top = colorField('Сверху', s.bgColors[0], (v) => mutate((x) => (x.bgColors = [v, x.bgColors[1]])));
-      const bot = colorField('Снизу', s.bgColors[1], (v) => mutate((x) => (x.bgColors = [x.bgColors[0], v])));
-      fields.push({ get: (st) => st.bgColors[0], field: top as Field<unknown> });
-      fields.push({ get: (st) => st.bgColors[1], field: bot as Field<unknown> });
+    } else if (bg.bgType === 'gradient') {
+      const top = colorField('Сверху', bg.bgColors[0], (v) => mutateBg((x) => (x.bgColors = [v, x.bgColors[1]])));
+      const bot = colorField('Снизу', bg.bgColors[1], (v) => mutateBg((x) => (x.bgColors = [x.bgColors[0], v])));
+      projFields.push({ get: (p) => p.background.bgColors[0], field: top as Field<unknown> });
+      projFields.push({ get: (p) => p.background.bgColors[1], field: bot as Field<unknown> });
       bgCardEl.appendChild(top.root);
       bgCardEl.appendChild(bot.root);
     } else {
@@ -303,38 +480,33 @@ export function createStylePanel(): { root: HTMLElement } {
         const f = file.files?.[0];
         if (!f) return;
         const dataUrl = await fileToDataUrl(f);
-        mutate((x) => (x.bgImageDataUrl = dataUrl));
+        mutateBg((x) => (x.bgImageDataUrl = dataUrl));
         invalidateBgImageCache();
       });
       lab.appendChild(file);
       bgCardEl.appendChild(lab);
-      if (s.bgImageDataUrl) {
+      if (bg.bgImageDataUrl) {
         bgCardEl.appendChild(el('div', { className: 'hint', text: 'Картинка загружена. Смените тип фона, чтобы применить.' }));
       }
     }
   }
 
-  function buildLayout(s: Style, p: Project): void {
+  function buildProjectLayout(project: Project): void {
     layoutCardEl.innerHTML = '';
-    layoutCardEl.appendChild(el('h2', { text: 'Раскладка и экспорт' }));
-    // The active renderer's setting controls (auto-generated from its spec).
-    const renderer = getRenderer(s.layout);
-    for (const spec of renderer.settings) {
-      layoutCardEl.appendChild(buildRendererSettingControl(renderer.id, spec, p).root);
-    }
+    layoutCardEl.appendChild(el('h2', { text: 'Проект и экспорт' }));
 
-    const res = selectField('Разрешение', [['1920x1080', '1920×1080 (Full HD)'], ['1280x720', '1280×720 (HD)']], `${p.width}x${p.height}`, (v) => {
+    const res = selectField('Разрешение', [['1920x1080', '1920×1080 (Full HD)'], ['1280x720', '1280×720 (HD)']], `${project.width}x${project.height}`, (v) => {
       const [w, h] = v.split('x').map((n) => parseInt(n, 10));
       store.mutate((pr) => {
         pr.width = w;
         pr.height = h;
       });
     });
-    fields.push({ get: (_st, pr) => `${pr.width}x${pr.height}`, field: res as Field<unknown> });
+    projFields.push({ get: (pr) => `${pr.width}x${pr.height}`, field: res as Field<unknown> });
     layoutCardEl.appendChild(res.root);
 
-    const fps = numberField('FPS', p.fps, 15, 60, 1, (v) => store.mutate((pr) => (pr.fps = Math.round(v))));
-    fields.push({ get: (_st, pr) => pr.fps, field: fps as Field<unknown> });
+    const fps = numberField('FPS', project.fps, 15, 60, 1, (v) => store.mutate((pr) => (pr.fps = Math.round(v))));
+    projFields.push({ get: (pr) => pr.fps, field: fps as Field<unknown> });
     layoutCardEl.appendChild(fps.root);
 
     // Waveform visibility toggle (UI-only setting, lives on the project).
@@ -342,11 +514,11 @@ export function createStylePanel(): { root: HTMLElement } {
     waveLab.appendChild(el('span', { text: 'Волна на таймлайне' }));
     const waveCb = el('input') as HTMLInputElement;
     waveCb.type = 'checkbox';
-    waveCb.checked = p.showWaveform;
+    waveCb.checked = project.showWaveform;
     waveCb.addEventListener('change', () => store.mutate((pr) => (pr.showWaveform = waveCb.checked)));
     waveLab.appendChild(waveCb);
-    fields.push({
-      get: (_st, pr) => pr.showWaveform,
+    projFields.push({
+      get: (pr) => pr.showWaveform,
       field: {
         root: waveLab,
         set: (v) => {
@@ -357,45 +529,44 @@ export function createStylePanel(): { root: HTMLElement } {
     layoutCardEl.appendChild(waveLab);
   }
 
-  function rebuildAll(): void {
-    const { style, ...rest } = store.getProject() as Project;
-    const project = { style, ...rest };
-    fields.length = 0; // clear references; conditional rebuilds repopulate
-    buildBase(style);
-    buildStroke(style);
-    buildBg(style);
-    buildLayout(style, project);
-    lastBgType = style.bgType;
-    lastLayout = style.layout;
+  function rebuildProjectCards(): void {
+    const project = store.getProject();
+    projFields.length = 0;
+    buildBg(project.background);
+    lastBgType = project.background.bgType;
+    buildProjectLayout(project);
   }
 
   function syncFromStore(): void {
     const project = store.getProject();
-    const s = project.style;
+    const track = getActiveTrack(project);
+    const s = track.style;
 
-    // Conditional blocks: rebuild ONLY when their condition flips (not on every
-    // value tweak), so dragging a slider doesn't tear down the panel.
-    if (s.bgType !== lastBgType) {
-      buildBg(s);
-      lastBgType = s.bgType;
-    }
-    if (s.layout !== lastLayout) {
-      buildLayout(s, project);
-      lastLayout = s.layout;
+    // Per-track cards: rebuild ONLY when the active track or the layout mode
+    // changes, so dragging a slider within a track doesn't tear down the panel.
+    if (project.activeTrackId !== lastActiveTrackId || s.layout !== lastLayout) {
+      rebuildTrackCards();
+    } else {
+      // Sync every per-track field's value in place.
+      for (const { get, field } of trackFields) field.set(get(s, track));
     }
 
-    // Sync every field's value in place (setters only touch .value when needed).
-    for (const { get, field } of fields) {
-      field.set(get(s, project));
+    // Background card: rebuild ONLY when bg type flips.
+    if (project.background.bgType !== lastBgType) {
+      buildBg(project.background);
+      lastBgType = project.background.bgType;
     }
+
+    // Project-level fields (bg colors, resolution, fps, waveform).
+    for (const { get, field } of projFields) field.set(get(project));
   }
 
   // Initial build.
-  rebuildAll();
-  root.appendChild(baseCardEl);
-  root.appendChild(strokeCardEl);
+  root.appendChild(trackHost);
   root.appendChild(bgCardEl);
   root.appendChild(layoutCardEl);
+  rebuildTrackCards();
+  rebuildProjectCards();
 
   store.subscribe(syncFromStore);
 

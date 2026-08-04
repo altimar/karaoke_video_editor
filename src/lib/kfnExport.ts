@@ -12,7 +12,44 @@
  * Structure reverse-engineered by George Yunaev (ulduzsoft.com) and verified
  * against real .kfn sample files.
  */
-import { Project } from '../types';
+import { Project, TextTrack } from '../types';
+import { ExportCanceledError } from './exportErrors';
+
+/** Max outline thickness KaraFun Studio supports (Frame0..Frame5). */
+const KFN_MAX_FRAME = 5;
+
+/**
+ * Warnings about project settings that don't map cleanly to the KaraFun format,
+ * computed WITHOUT building the file. Used to preview issues in the export
+ * dialog's KaraFun tab before the user starts the export. The same conditions
+ * are re-checked during export (in case the project changes between preview
+ * and export) and surfaced via the result's `warnings`.
+ */
+export function collectKfnWarnings(project: Project): string[] {
+  const warnings: string[] = [];
+  if (project.tracks.length > 2) {
+    warnings.push(
+      `В проекте ${project.tracks.length} дорожек, а KaraFun поддерживает максимум 2 текстовых эффекта. ` +
+        `Лишние дорожки экспортированы, но KaraFun может их не показать.`,
+    );
+  }
+  for (const track of project.tracks) {
+    if (track.style.layout !== 'scroller' && track.style.layout !== 'classic') {
+      warnings.push(
+        `Дорожка «${track.name}»: режим «${track.style.layout}» не поддерживается KaraFun, ` +
+          `экспортирован как скроллер (эффекты могут отличаться).`,
+      );
+    }
+    const strokeW = Math.max(0, Math.round(track.style.strokeWidth));
+    if (strokeW > KFN_MAX_FRAME) {
+      warnings.push(
+        `Дорожка «${track.name}»: толщина обводки ${strokeW} превышает максимум KaraFun (${KFN_MAX_FRAME}); ` +
+          `экспортировано ${KFN_MAX_FRAME}.`,
+      );
+    }
+  }
+  return warnings;
+}
 
 /** Build the binary header. All fields are mandatory for KaraFun compatibility. */
 function buildHeader(title: string, artist: string, source: string): Uint8Array {
@@ -121,12 +158,135 @@ function buildDirectoryAndData(entries: DirEntry[]): Uint8Array {
 }
 
 /**
- * Convert a Project's lyrics into the Song.ini text format.
- * - Each line becomes `Text{n}=...` with syllables separated by `/`.
- * - Timings become `Sync{n}=...` in centiseconds (ms / 10), comma-separated.
- * - Sync{n} corresponds to Text{n}: one timestamp per syllable in that line.
+ * Build ONE [EffN] effect section from a text track. ID is 1 for the first text
+ * track and 2 for any additional one (KaraFun supports at most two text layers).
+ * The renderer mode is written back into KFN fields:
+ *  - scroller → Trajectory=PlainBottomToTop (the scroll animation);
+ *  - classic  → no Trajectory, LineCount=lineSlots, OffsetX/OffsetY (fixed slots).
+ * Non-scroller layouts are coerced to scroller-equivalent fields and a warning
+ * is emitted, since KaraFun only knows these two animation styles.
+ *
+ * Returns the section lines plus any export warnings.
  */
-function buildSongIni(project: Project, audioFileName: string): string {
+function buildEffectSection(track: TextTrack, effIndex: number, textTrackIndex: number): { lines: string[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const out: string[] = [];
+  // KaraFun text effect ID: 1 for the main lyrics, 2 for the alternate. It
+  // depends on the TEXT track order, not the absolute effect index (a background
+  // image effect may precede the text effects).
+  const id = textTrackIndex === 0 ? 1 : 2;
+
+  out.push(`[Eff${effIndex + 1}]`);
+  out.push(`ID=${id}`);
+  out.push('InPractice=1');
+  // Track name — KaraFun stores it in Caption.
+  out.push(`Caption=${track.name}`);
+  out.push('Enabled=-1');
+  out.push('Locked=0');
+
+  // Text lines + a FLAT array of all syllable timestamps for this effect.
+  // In real KFN files, Sync0..SyncN are chunks of ~41 timestamps each that
+  // together form one flat sequence covering ALL syllables of the effect.
+  const textLines: string[] = [];
+  const allSyncs: number[] = [];
+  let textIdx = 0;
+  for (const line of track.lines) {
+    let text = '';
+    for (const syl of line.syllables) {
+      if (syl.sep === ' ') text += ' ';
+      else if (syl.sep === '/') text += '/';
+      text += syl.text;
+      allSyncs.push(syl.startMs !== null ? Math.round(syl.startMs / 10) : -1);
+    }
+    textLines.push(`Text${textIdx}=${text}`);
+    textIdx++;
+  }
+  out.push(`TextCount=${textIdx}`);
+  for (const t of textLines) out.push(t);
+
+  const CHUNK = 41;
+  for (let i = 0; i < allSyncs.length; i += CHUNK) {
+    const chunk = allSyncs.slice(i, i + CHUNK);
+    out.push(`Sync${Math.floor(i / CHUNK)}=${chunk.join(',')}`);
+  }
+
+  // Font: KFN size is in KaraFun units where 18 ≈ our 64px (verified on samples).
+  const kfnFontSize = Math.max(8, Math.round((track.style.fontSize * 18) / 64));
+  // Strip fallback families — KFN wants a single family name.
+  const family = track.style.fontFamily.split(',')[0].trim();
+  out.push(`Font=${family}*${kfnFontSize}`);
+  out.push(`ActiveColor=${cssToArgb(track.style.colorHighlight)}`);
+  out.push(`InactiveColor=${cssToArgb(track.style.colorBase)}`);
+  out.push(`FrameColor=${cssToArgb(track.style.strokeColorActive)}`);
+  out.push(`InactiveFrameColor=${cssToArgb(track.style.strokeColorInactive)}`);
+  // Stroke width → FrameType: KaraFun encodes outline thickness as the FrameType
+  // name (Frame0 = none, Frame1 = 1px, …, Frame5 = 5px max). Clamp to the max
+  // KaraFun Studio supports and warn when the project's width exceeds it (our
+  // own renderer is not limited, but a .kfn opened in KaraFun would be capped).
+  const strokeW = Math.max(0, Math.round(track.style.strokeWidth));
+  if (strokeW > KFN_MAX_FRAME) {
+    warnings.push(
+      `Дорожка «${track.name}»: толщина обводки ${strokeW} превышает максимум KaraFun (${KFN_MAX_FRAME}); ` +
+        `экспортировано ${KFN_MAX_FRAME}.`,
+    );
+  }
+  out.push(`FrameType=Frame${Math.min(KFN_MAX_FRAME, strokeW)}`);
+  out.push('Alignment=Center');
+
+  // Layout → KFN animation fields. KaraFun has two lyric styles: scrolling
+  // (Trajectory=PlainBottomToTop) and fixed-slot. Map our modes onto them.
+  // OffsetZ is a perspective/depth value KaraFun uses to scale scrolling text
+  // (0 = huge/foreground, larger = smaller/farther; Studio always writes 30).
+  // We don't render perspective ourselves, but mirror KaraFun's defaults so the
+  // exported file looks right when opened in KaraFun Studio.
+  const KFN_SCROLLER_OFFSETZ = 30;
+  const classic = track.rendererSettings?.classic;
+  if (track.style.layout === 'classic' && classic) {
+    out.push('LineCount=' + (classic.lineSlots ?? 4));
+    out.push('OffsetX=' + (classic.offsetX ?? 0));
+    out.push('OffsetY=' + (classic.offsetY ?? 0));
+    // Classic (fixed-slot) tracks have no OffsetZ in KaraFun files.
+  } else if (track.style.layout === 'scroller') {
+    out.push('Trajectory=PlainBottomToTop*1.000000*1.000000*1.000000*1.000000');
+    out.push('OffsetX=0');
+    out.push('OffsetY=0');
+    out.push(`OffsetZ=${KFN_SCROLLER_OFFSETZ}`);
+  } else {
+    // Unknown / future renderer: coerce to scroller (the most compatible) and warn.
+    warnings.push(
+      `Дорожка «${track.name}»: режим «${track.style.layout}» не поддерживается KaraFun, ` +
+        `экспортирован как скроллер (эффекты могут отличаться).`,
+    );
+    out.push('Trajectory=PlainBottomToTop*1.000000*1.000000*1.000000*1.000000');
+    out.push('OffsetX=0');
+    out.push('OffsetY=0');
+    out.push(`OffsetZ=${KFN_SCROLLER_OFFSETZ}`);
+  }
+  out.push('IsFade=1');
+  out.push('AspectRatio=1');
+  out.push('IsFill=1');
+  out.push('NbAnim=0');
+  out.push('InSync=1');
+  out.push('');
+
+  return { lines: out, warnings };
+}
+
+/**
+ * Build Song.ini from ALL text tracks + optional background image. Each text
+ * track becomes its own [EffN] effect (ID=1 for the first, ID=2 for the rest);
+ * a background image, if present, is written as an [Eff1] ID=51 effect BEFORE
+ * the text effects (matching KaraFun's own file order). KaraFun supports at
+ * most two text effects, so more than two tracks produce a warning (they are
+ * still written as additional effects, at the user's own risk).
+ */
+function buildSongIni(
+  project: Project,
+  tracks: TextTrack[],
+  audioFileName: string,
+  bgImageFileName: string | null,
+): { ini: string; warnings: string[] } {
+  const warnings: string[] = [];
   const lines: string[] = [];
 
   // [General] section
@@ -142,7 +302,8 @@ function buildSongIni(project: Project, audioFileName: string): string {
   lines.push('Copyright=');
   lines.push('Comment=');
   lines.push(`Source=1,I,${audioFileName}`);
-  lines.push('EffectCount=1');
+  // EffectCount covers ALL effects: background image + text tracks.
+  lines.push(`EffectCount=${tracks.length + (bgImageFileName ? 1 : 0)}`);
   lines.push('LanguageID=');
   lines.push('DiffMen=0');
   lines.push('DiffWomen=0');
@@ -155,93 +316,192 @@ function buildSongIni(project: Project, audioFileName: string): string {
   lines.push('GlobalShift=0');
   lines.push('');
   lines.push('[Marks]');
+  for (let i = 0; i <= 8; i++) lines.push(`Mark${i}=-1`);
+  lines.push('');
 
   // [MP3Music]
   lines.push('[MP3Music]');
   lines.push('NumTracks=0');
   lines.push('');
 
-  // [Eff1] — the lyrics effect
-  lines.push('[Eff1]');
-  lines.push('ID=1');
-  lines.push('InPractice=1');
-  lines.push('Enabled=-1');
-  lines.push('Locked=0');
-
-  // Build Text lines and a FLAT array of all syllable timestamps.
-  // In real KFN files, Sync0..SyncN are chunks of ~40 timestamps each that
-  // together form one flat sequence covering ALL syllables across ALL text lines.
-  // We replicate this: collect all timestamps in order, then split into chunks.
-  const textLines: string[] = [];
-  const allSyncs: number[] = [];
-  let textIdx = 0;
-
-  for (const line of project.lines) {
-    let text = '';
-    for (const syl of line.syllables) {
-      if (syl.sep === ' ') text += ' ';
-      else if (syl.sep === '/') text += '/';
-      text += syl.text;
-      // Centiseconds: ms / 10. Use -1 for untimed syllables.
-      allSyncs.push(syl.startMs !== null ? Math.round(syl.startMs / 10) : -1);
-    }
-    textLines.push(`Text${textIdx}=${text}`);
-    textIdx++;
+  // Background image effect (ID=51) goes FIRST, matching KaraFun's file order.
+  let effIndex = 0;
+  if (bgImageFileName) {
+    lines.push(`[Eff${effIndex + 1}]`);
+    lines.push('ID=51');
+    lines.push('InPractice=0');
+    lines.push('Enabled=-1');
+    lines.push('Locked=0');
+    lines.push('Color=#000000');
+    lines.push(`LibImage=${bgImageFileName}`);
+    lines.push('ImageColor=#FFFFFFFF');
+    lines.push('AlphaBlending=Opacity');
+    lines.push('OffsetX=0');
+    lines.push('OffsetY=0');
+    lines.push('Depth=0');
+    lines.push('NbAnim=0');
+    lines.push('');
+    effIndex++;
   }
 
-  lines.push(`TextCount=${textIdx}`);
-  for (const t of textLines) lines.push(t);
-
-  // Split allSyncs into chunks of ~41 (matching observed files) and emit as Sync0..SyncN.
-  const CHUNK = 41;
-  for (let i = 0; i < allSyncs.length; i += CHUNK) {
-    const chunk = allSyncs.slice(i, i + CHUNK);
-    lines.push(`Sync${Math.floor(i / CHUNK)}=${chunk.join(',')}`);
+  // One [EffN] per text track. Warn if more than two — KaraFun only defines two
+  // text layers (ID=1 main, ID=2 alternate).
+  if (tracks.length > 2) {
+    warnings.push(
+      `В проекте ${tracks.length} дорожек, а KaraFun поддерживает максимум 2 текстовых эффекта. ` +
+        `Лишние дорожки экспортированы, но KaraFun может их не показать.`,
+    );
+  }
+  for (let i = 0; i < tracks.length; i++) {
+    const { lines: effLines, warnings: effWarn } = buildEffectSection(tracks[i], effIndex, i);
+    lines.push(...effLines);
+    warnings.push(...effWarn);
+    effIndex++;
   }
 
-  // Styling (minimal defaults for KFN compatibility).
-  // KFN font size is NOT in pixels — it's in KaraFun's own units where 18 is the
-  // standard readable size (verified across all sample files). Our project's
-  // fontSize (e.g. 64px at 1080p) would be absurdly large, so we map
-  // proportionally: 64px → 18 KFN units.
-  const kfnFontSize = Math.max(8, Math.round(project.style.fontSize * 18 / 64));
-  lines.push(`Font=${project.style.fontFamily}*${kfnFontSize}`);
-  lines.push(`ActiveColor=#00ACFFFF`);
-  lines.push(`InactiveColor=#FFFFFFFF`);
-  lines.push(`FrameColor=#000000FF`);
-  lines.push(`InactiveFrameColor=#010101FF`);
-
-  return lines.join('\r\n');
+  return { ini: lines.join('\r\n'), warnings };
 }
 
 /**
- * Export the project to a KaraFun .kfn file Blob.
- * @param project The karaoke project with lyrics and timings.
- * @param audioData Raw bytes of the original MP3 file.
- * @returns A Blob containing the .kfn file.
+ * Convert a CSS color (hex / rgba / rgb) to KFN's `#RRGGBBAA` format. KaraFun
+ * stores colors as Red,Green,Blue,Alpha (alpha is the LAST byte) — see the
+ * matching `argbToCss` in kfnImport.ts. This is NOT ARGB despite the #AARRGGBB
+ * sometimes seen in references: `#00ACFFFF` is opaque cyan (RR GG BB AA).
  */
-export function exportToKfn(project: Project, audioData: Uint8Array): Blob {
+function cssToArgb(css: string): string {
+  css = (css ?? '').trim();
+  const hex = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+  // #RGB / #RRGGBB / #RRGGBBAA / #RGBA
+  const hexMatch = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8}|[0-9a-fA-F]{4})$/.exec(css);
+  if (hexMatch) {
+    let h = hexMatch[1];
+    let a = 255;
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    else if (h.length === 4) {
+      a = parseInt(h[3] + h[3], 16);
+      h = h.slice(0, 3).split('').map((c) => c + c).join('');
+    } else if (h.length === 8) {
+      a = parseInt(h.slice(6, 8), 16);
+      h = h.slice(0, 6);
+    }
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    return `#${hex(r)}${hex(g)}${hex(b)}${hex(a)}`.toUpperCase();
+  }
+  const rgbaMatch = /rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:[\s,]+([\d.]+))?\s*\)/i.exec(css);
+  if (rgbaMatch) {
+    const r = parseInt(rgbaMatch[1], 10);
+    const g = parseInt(rgbaMatch[2], 10);
+    const b = parseInt(rgbaMatch[3], 10);
+    const a = rgbaMatch[4] !== undefined ? Math.round(parseFloat(rgbaMatch[4]) * 255) : 255;
+    return `#${hex(r)}${hex(g)}${hex(b)}${hex(a)}`.toUpperCase();
+  }
+  return '#FFFFFFFF';
+}
+
+/** Result of a KFN export: the Blob plus human-readable warnings. */
+export interface KfnExportResult {
+  blob: Blob;
+  warnings: string[];
+}
+
+/** Options for an async KFN export run. */
+export interface KfnExportOptions {
+  /** If provided and aborted, the export rejects with ExportCanceledError. */
+  signal?: AbortSignal;
+  /** Called with 0..1 as the file is built. */
+  onProgress?: (fraction: number) => void;
+}
+
+/**
+ * Export the project to a KaraFun .kfn file. Every text track becomes its own
+ * [EffN] effect (ID=1 for the first, ID=2 for the rest). KaraFun supports at
+ * most two text effects, so exporting more than two tracks yields a warning
+ * (still written). Non-scroller/non-classic renderers are coerced to scroller
+ * with a per-track warning.
+ *
+ * The export runs asynchronously and reports progress so the UI can show a
+ * progress bar. The heavy step is copying the (potentially large) audio bytes
+ * into the container, so that phase covers most of the 0..1 range.
+ */
+export async function exportToKfn(
+  project: Project,
+  audioData: Uint8Array,
+  options?: KfnExportOptions,
+): Promise<KfnExportResult> {
+  const signal = options?.signal;
+  const onProgress = options?.onProgress;
+  const report = (f: number): void => onProgress?.(Math.max(0, Math.min(1, f)));
+  // Yield to the event loop so the UI can paint between phases.
+  const yield_ = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+  const checkAbort = (): void => {
+    if (signal?.aborted) throw new ExportCanceledError('Экспорт отменён');
+  };
+
   const audioFileName = project.audioFileName || 'song.mp3';
   const title = audioFileName.replace(/\.[^.]+$/, '').replace(/[_]/g, ' ');
   const source = `1,I,${audioFileName}`;
 
-  // Build Song.ini.
-  const songIni = buildSongIni(project, audioFileName);
+  if (project.tracks.length === 0) {
+    throw new Error('В проекте нет дорожек для экспорта');
+  }
+  report(0.02);
+
+  // Phase 1: build Song.ini (with all warnings collected along the way).
+  checkAbort();
+  let bgImageFileName: string | null = null;
+  if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
+    bgImageFileName = 'background.' + (project.background.bgImageDataUrl.match(/data:image\/([a-z0-9]+);/i)?.[1] ?? 'jpg');
+  }
+  const { ini: songIni, warnings } = buildSongIni(project, project.tracks, audioFileName, bgImageFileName);
   const songIniBytes = new TextEncoder().encode(songIni);
+  report(0.1);
+  await yield_();
 
-  // Build the file entries: audio (type 2) + Song.ini (type 1).
-  const entries: DirEntry[] = [
-    { filename: audioFileName, fileType: 2, data: audioData },
-    { filename: 'Song.ini', fileType: 1, data: songIniBytes },
-  ];
+  // Phase 2: decode the background image (if any) into raw bytes.
+  checkAbort();
+  const entries: DirEntry[] = [{ filename: audioFileName, fileType: 2, data: audioData }];
+  if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
+    const decoded = decodeDataUrl(project.background.bgImageDataUrl);
+    if (decoded) entries.push({ filename: decoded.filename, fileType: 3, data: decoded.bytes });
+  }
+  entries.push({ filename: 'Song.ini', fileType: 1, data: songIniBytes });
+  report(0.35);
+  await yield_();
 
-  // Assemble: header + directory + data.
+  // Phase 3: assemble the binary container (header + directory + data). The
+  // directory builder copies all file bytes — dominated by the audio size.
+  checkAbort();
   const header = buildHeader(title, '', source);
   const dirAndData = buildDirectoryAndData(entries);
+  report(0.9);
+  await yield_();
 
+  // Phase 4: final concatenation + Blob.
+  checkAbort();
   const out = new Uint8Array(header.length + dirAndData.length);
   out.set(header, 0);
   out.set(dirAndData, header.length);
+  report(1);
 
-  return new Blob([out], { type: 'application/octet-stream' });
+  return { blob: new Blob([out], { type: 'application/octet-stream' }), warnings };
+}
+
+/**
+ * Decode a `data:image/<ext>;base64,...` URL into raw bytes + a sane filename.
+ * Returns null for non-image or malformed data URLs.
+ */
+function decodeDataUrl(dataUrl: string): { bytes: Uint8Array; filename: string } | null {
+  const m = /^data:image\/([a-zA-Z0-9]+);base64,(.+)$/.exec(dataUrl);
+  if (!m) return null;
+  const ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
+  try {
+    const bin = atob(m[2]);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return { bytes, filename: `background.${ext}` };
+  } catch {
+    return null;
+  }
 }

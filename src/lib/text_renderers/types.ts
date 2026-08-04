@@ -6,7 +6,7 @@
  * pipeline through a single uniform `render(ctx, timeMs, env)` call, so new modes
  * can be added without touching the orchestrator or each other.
  */
-import { Layout, Project, Syllable } from '../../types';
+import { Layout, Line, Syllable, TextStyle } from '../../types';
 
 /** 2D context of either a regular canvas (preview) or an OffscreenCanvas (export). */
 export type RenderCtx = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -21,13 +21,25 @@ export interface TimedSyllable {
 }
 
 /**
- * What a renderer needs to draw one frame. The orchestrator (render.ts)
- * pre-computes the shared `timings` and `activeLineIndex` once so every renderer
- * gets the same picture without re-deriving it.
+ * What a renderer needs to draw one frame of ONE text track. The orchestrator
+ * (render.ts) pre-computes the shared `timings` and `activeLineIndex` per track
+ * so every renderer gets the same picture without re-deriving it. The
+ * orchestrator loops over all tracks and calls each track's renderer with this
+ * env — tracks are independent and may overlap visually.
  */
 export interface RenderEnv {
-  project: Project;
+  /** This track's lyrics. */
+  lines: Line[];
+  /** This track's text style (font, colors, stroke/glow, layout). */
+  style: TextStyle;
+  /** Canvas dimensions in px (shared across tracks). */
+  width: number;
+  height: number;
+  /** Song duration in ms — used as the end of the last timed syllable. */
+  durationMs: number;
+  /** Pre-computed timed syllables for this track (timed only — see buildTimings). */
   timings: TimedSyllable[];
+  /** Index of the line currently filling at this frame (−1 if before first). */
   activeLineIndex: number;
 }
 

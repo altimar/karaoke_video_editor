@@ -28,8 +28,7 @@ export const scrollerRenderer: TextRenderer = {
     { key: 'visibleLines', label: 'Сколько строк видно', kind: 'number', min: 2, max: 16, step: 1, default: 8 },
   ],
   render(ctx: RenderCtx, timeMs: number, env: RenderEnv, settings: Record<string, RenderSettingValue>): void {
-    const { project, timings, activeLineIndex } = env;
-    const { width, height, style, lines } = project;
+    const { lines, style, width, height, timings, activeLineIndex } = env;
     applyFont(ctx, style);
 
     const N = clampInt(settings.visibleLines, 8, 2, 16);

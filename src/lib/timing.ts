@@ -2,16 +2,21 @@
  * Timing capture controller.
  *
  * In "record" mode, audio plays and pressing Space stamps the current playback
- * time as the start time of the next untimed syllable (in order). This lets the
- * user tap along with the song to set syllable starts. Pressing the same flow
- * again advances to the next syllable.
+ * time as the start time of the next untimed syllable (in order) of the ACTIVE
+ * text track. This lets the user tap along with the song to set syllable starts.
+ * Pressing the same flow again advances to the next syllable.
  *
  * You can also re-record from a specific syllable: pass a start index and all
  * syllables from there become untimed and get re-stamped.
+ *
+ * Timing capture always targets the project's active track. Switching the
+ * active track resets the cursor to that track's first untimed syllable on the
+ * next `start()`.
  */
 import { store } from '../state/store';
 import { audioEngine } from './audioEngine';
 import { flatSyllables } from './textParser';
+import { getActiveTrack } from '../types';
 
 export type RecordStateListener = (recording: boolean, currentIndex: number) => void;
 
@@ -37,18 +42,18 @@ class TimingCapture {
   }
 
   /**
-   * Begin recording. If `fromIndex` is given, syllables from that flat index
-   * onward are cleared (set to null) and re-stamped; otherwise recording
-   * continues from the first still-untimed syllable.
+   * Begin recording on the ACTIVE track. If `fromIndex` is given, syllables from
+   * that flat index onward are cleared (set to null) and re-stamped; otherwise
+   * recording continues from the first still-untimed syllable of the active track.
    */
   start(fromIndex?: number): void {
     const project = store.getProject();
-    const flat = flatSyllables(project.lines);
+    const flat = flatSyllables(getActiveTrack(project).lines);
     if (flat.length === 0) return;
 
     if (fromIndex !== undefined) {
       store.mutate((p) => {
-        const f = flatSyllables(p.lines);
+        const f = flatSyllables(getActiveTrack(p).lines);
         for (let i = fromIndex; i < f.length; i++) {
           f[i].syl.startMs = null;
         }
@@ -72,18 +77,18 @@ class TimingCapture {
     this.emit();
   }
 
-  /** Stamp current playback time onto the cursor syllable and advance. */
+  /** Stamp current playback time onto the cursor syllable of the active track and advance. */
   stampNow(): void {
     if (!this.recording) return;
     const timeMs = audioEngine.currentTimeMs;
     const project = store.getProject();
-    const flat = flatSyllables(project.lines);
+    const flat = flatSyllables(getActiveTrack(project).lines);
     if (this.cursor >= flat.length) {
       this.stop();
       return;
     }
     store.mutate((p) => {
-      const f = flatSyllables(p.lines);
+      const f = flatSyllables(getActiveTrack(p).lines);
       if (f[this.cursor]) f[this.cursor].syl.startMs = Math.round(timeMs);
     });
     this.cursor++;

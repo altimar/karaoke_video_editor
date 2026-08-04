@@ -7,7 +7,8 @@ import { store } from '../state/store';
 import { audioEngine } from '../lib/audioEngine';
 import { timingCapture } from '../lib/timing';
 import { exportToMp4, downloadBlob, canExport, ExportCanceledError } from '../lib/export';
-import { exportToKfn } from '../lib/kfnExport';
+import { invalidateBgImageCache } from '../lib/render';
+import { exportToKfn, collectKfnWarnings } from '../lib/kfnExport';
 import { importFromKfn } from '../lib/kfnImport';
 import { openExportDialog } from './exportDialog';
 import { Project } from '../types';
@@ -130,13 +131,18 @@ export function createTopbar(toast: ToastFn): {
       // Load audio.
       await audioEngine.loadBytes(result.audioBytes, result.project.audioFileName);
       audioBytes = result.audioBytes;
-      // Load lyrics + timings into the project.
+      // Load one or more text tracks from the KFN text effects, plus the
+      // background image if the file had one.
       store.mutate((p) => {
-        p.lines = result.project.lines;
+        p.tracks = result.project.tracks;
+        p.activeTrackId = result.project.tracks[0].id;
         p.audioFileName = result.project.audioFileName;
         p.durationMs = audioEngine.durationMs;
+        p.background = result.project.background;
       });
-      toast(`KFN загружен: ${result.project.audioFileName}`, 'ok');
+      invalidateBgImageCache();
+      const n = result.project.tracks.length;
+      toast(`KFN загружен: ${result.project.audioFileName} (${n} ${pluralTracks(n)})`, 'ok');
       refreshAll();
     } catch (err) {
       console.error(err);
@@ -150,33 +156,12 @@ export function createTopbar(toast: ToastFn): {
   spacer.className = 'spacer';
   root.appendChild(spacer);
 
-  // --- Export ---
+  // --- Export (single button → tabbed dialog: Video / KaraFun) ---
   const exportBtn = document.createElement('button');
   exportBtn.className = 'primary';
-  exportBtn.textContent = '⬇ Скачать MP4';
+  exportBtn.textContent = '⬇ Экспорт';
   exportBtn.addEventListener('click', () => onExport(exportBtn));
   root.appendChild(exportBtn);
-
-  const kfnBtn = document.createElement('button');
-  kfnBtn.textContent = '⬇ Скачать KFN';
-  kfnBtn.title = 'Экспорт в формат KaraFun (.kfn)';
-  kfnBtn.addEventListener('click', () => {
-    const project = store.getProject();
-    if (!audioBytes) {
-      toast('Загрузите MP3 перед экспортом', 'err');
-      return;
-    }
-    try {
-      const blob = exportToKfn(project, audioBytes);
-      const name = (project.audioFileName?.replace(/\.[^.]+$/, '') || 'karaoke') + '.kfn';
-      downloadBlob(blob, name);
-      toast('KFN скачан', 'ok');
-    } catch (err) {
-      console.error(err);
-      toast('Ошибка экспорта KFN: ' + (err instanceof Error ? err.message : String(err)), 'err');
-    }
-  });
-  root.appendChild(kfnBtn);
 
   function refreshAll(): void {
     playBtn.textContent = audioEngine.isPlaying ? '⏸ Пауза' : '▶ Пуск';
@@ -201,46 +186,65 @@ export function createTopbar(toast: ToastFn): {
     audioEngine.toggle();
   });
 
-  // --- Export flow: quality dialog → render → download ---
+  // --- Export flow: tabbed dialog (Video / KaraFun) → render/build → download ---
   function onExport(btn: HTMLButtonElement): void {
     const buffer = audioEngine.audioBuffer;
     const project = store.getProject();
-    if (!buffer) {
+    if (!buffer || !audioBytes) {
       toast('Загрузите MP3 перед экспортом', 'err');
       return;
     }
+    const audio = audioBytes; // non-null snapshot for the async closure below
     if (project.durationMs <= 0) {
       store.mutate((p) => (p.durationMs = audioEngine.durationMs));
     }
+    // Warn early if the browser can't do WebCodecs — the user can still pick KFN.
     if (!canExport()) {
-      toast('Экспорт недоступен — нужен Chrome/Edge (WebCodecs)', 'err');
-      return;
+      toast('Экспорт видео недоступен — нужен Chrome/Edge (WebCodecs). Доступен только KaraFun.', 'err');
     }
 
     btn.disabled = true;
-    const dialog = openExportDialog();
+    // Preview KFN compatibility issues in the dialog's KaraFun tab.
+    const kfnWarnings = collectKfnWarnings(project);
+    const dialog = openExportDialog(kfnWarnings);
     const abort = new AbortController();
 
-    // If the user cancels via the dialog (X / backdrop / Cancel button / Esc),
-    // trigger the export abort.
+    // If the user cancels via the dialog (X / backdrop / Cancel / Esc), abort.
     dialog.promise.catch(() => abort.abort());
 
     dialog.promise
-      .then(async (qualityId) => {
-        const blob = await exportToMp4(
-          store.getProject(),
-          buffer,
-          { qualityId, signal: abort.signal },
-          (frac) => dialog.setProgress(frac),
-        );
-        dialog.close();
-        const name = (project.audioFileName?.replace(/\.[^.]+$/, '') || 'karaoke') + '.mp4';
-        downloadBlob(blob, name);
-        toast('Готово! MP4 скачан', 'ok');
+      .then(async (choice) => {
+        if (choice.format === 'mp4') {
+          if (!canExport()) {
+            throw new Error('Экспорт видео недоступен — нужен Chrome/Edge (WebCodecs)');
+          }
+          const blob = await exportToMp4(
+            store.getProject(),
+            buffer,
+            { qualityId: choice.qualityId, signal: abort.signal },
+            (frac) => dialog.setProgress(frac),
+          );
+          dialog.close();
+          const name = (project.audioFileName?.replace(/\.[^.]+$/, '') || 'karaoke') + '.mp4';
+          downloadBlob(blob, name);
+          toast('Готово! MP4 скачан', 'ok');
+        } else {
+          const result = await exportToKfn(store.getProject(), audio, {
+            signal: abort.signal,
+            onProgress: (frac) => dialog.setProgress(frac),
+          });
+          dialog.close();
+          const name = (project.audioFileName?.replace(/\.[^.]+$/, '') || 'karaoke') + '.kfn';
+          downloadBlob(result.blob, name);
+          if (result.warnings.length > 0) {
+            toast(result.warnings.join(' '), 'err');
+          } else {
+            toast('KFN скачан', 'ok');
+          }
+        }
       })
       .catch((err) => {
         dialog.cancel();
-        // Aborted render: abort the underlying export too.
         abort.abort();
         if (err instanceof ExportCanceledError) {
           toast('Экспорт отменён', 'info');
@@ -256,4 +260,13 @@ export function createTopbar(toast: ToastFn): {
 
   refreshAll();
   return { root, refreshAudioState };
+}
+
+/** Russian pluralization for "дорожка": 1 → "дорожка", 2-4 → "дорожки", 5+ → "дорожек". */
+function pluralTracks(n: number): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'дорожка';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'дорожки';
+  return 'дорожек';
 }

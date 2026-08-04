@@ -1,27 +1,36 @@
 /**
  * Timeline component.
  *
- * A scrollable, zoomable horizontal canvas showing one row per line of lyrics.
- * Each syllable has a draggable marker at its start time. Dragging a marker
- * edits startMs; clicking empty ruler space seeks; the wheel zooms.
+ * Layout (like an audio editor): a fixed LEFT GUTTER of track "headers" plus a
+ * horizontally-scrollable TIMELINE CANVAS on the right.
+ *  - Gutter (HTML, not canvas): one header block per text track + one for the
+ *    optional waveform ("минус"). Headers are all the same width; clicking a
+ *    track header activates that track. The gutter does not scroll.
+ *  - Canvas: a shared time RULER, one optional WAVEFORM, and one ROW PER TEXT
+ *    TRACK. Time is measured from the canvas left edge (x=0); there is no left
+ *    margin on the canvas. Clicking the canvas seeks; dragging a marker edits
+ *    its startMs; the wheel zooms.
  *
- * Coordinates: ms → px via (ms / durationMs) * contentWidth. We render onto a
- * canvas whose width grows with zoom; it lives in a horizontally scrollable div.
+ * The gutter block heights are kept in sync with the canvas rows (same
+ * constants), so each header lines up with its track's marker line.
  */
 import { store } from '../state/store';
 import { audioEngine } from '../lib/audioEngine';
 import { timingCapture } from '../lib/timing';
 import { computePeaks } from '../lib/waveform';
 import { flatSyllables } from '../lib/textParser';
-import { Project } from '../types';
+import { Line, Project } from '../types';
 
-const ROW_H = 18; // px per timeline row — height of the text line
+const ROW_H = 18; // px per timeline row — height of one track's marker line
 const RULER_H = 26; // px for the time ruler
 const TOP_PAD = 4;
-const MARKER_W = 1; // marker is a 1px line (hit area is wider, see pickAt)
+const TRACK_PAD = 6; // vertical gap between track rows
 const WAVE_H = 44; // px for the waveform track (drawn between ruler and lyrics)
-const TIMELINE_ROWS = 3; // fixed number of rows; syllables cycle through them
 const HIT_W = 8; // horizontal hit zone half-width around the marker for dragging
+const MARKER_W = 1; // marker is a 1px line (hit area is wider, see pickAt)
+
+/** A hit on a specific track's syllable marker. */
+type Drag = { trackIndex: number; lineIndex: number; sylIndex: number; moved: boolean };
 
 export function createTimeline(): { root: HTMLElement } {
   const root = document.createElement('div');
@@ -33,13 +42,23 @@ export function createTimeline(): { root: HTMLElement } {
     '<span>Таймлайн</span><span class="hint">— клик = перемотка, перетаскивайте маркеры, Shift+колесо = зум</span>';
   root.appendChild(head);
 
+  // Body: fixed gutter (left) + scrollable canvas (right).
+  const body = document.createElement('div');
+  body.className = 'timeline-body';
+
+  const gutter = document.createElement('div');
+  gutter.className = 'timeline-gutter';
+  body.appendChild(gutter);
+
   const scroll = document.createElement('div');
   scroll.className = 'timeline-scroll';
   const canvas = document.createElement('canvas');
   canvas.className = 'timeline-canvas';
   const ctx = canvas.getContext('2d')!;
   scroll.appendChild(canvas);
-  root.appendChild(scroll);
+  body.appendChild(scroll);
+
+  root.appendChild(body);
 
   let zoom = 1; // multiplied onto the base width
   let playheadMs = 0;
@@ -61,36 +80,38 @@ export function createTimeline(): { root: HTMLElement } {
   const xToMs = (x: number) => (x / contentWidth()) * durationMs();
 
   // --- Interaction state ---
-  type Drag = { lineIndex: number; sylIndex: number; moved: boolean };
   let drag: Drag | null = null;
+
+  /** Vertical offset where the track rows begin (after ruler + waveform + pad). */
+  function tracksTop(): number {
+    const showWave = store.getProject().showWaveform && !!audioEngine.audioBuffer;
+    return RULER_H + TOP_PAD + (showWave ? WAVE_H + TOP_PAD : 0);
+  }
+
+  /** Y of the top of the given track's row. */
+  function trackTopForIndex(i: number): number {
+    return tracksTop() + i * (ROW_H + TRACK_PAD);
+  }
 
   function pickAt(clientX: number, clientY: number): Drag | null {
     const rect = canvas.getBoundingClientRect();
     const x = clientX - rect.left;
     const y = clientY - rect.top;
     const project = store.getProject();
-    const flat = flatSyllables(project.lines);
-    for (let i = 0; i < flat.length; i++) {
-      const { lineIndex, sylIndex, syl } = flat[i];
-      if (syl.startMs === null) continue;
-      const mx = msToX(syl.startMs);
-      const rowY = rowTopForRow(i % TIMELINE_ROWS);
-      if (x >= mx - HIT_W && x <= mx + HIT_W && y >= rowY && y <= rowY + ROW_H) {
-        return { lineIndex, sylIndex, moved: false };
+    for (let ti = 0; ti < project.tracks.length; ti++) {
+      const flat = flatSyllables(project.tracks[ti].lines);
+      const top = trackTopForIndex(ti);
+      if (y < top || y > top + ROW_H) continue;
+      for (let i = 0; i < flat.length; i++) {
+        const { lineIndex, sylIndex, syl } = flat[i];
+        if (syl.startMs === null) continue;
+        const mx = msToX(syl.startMs);
+        if (x >= mx - HIT_W && x <= mx + HIT_W) {
+          return { trackIndex: ti, lineIndex, sylIndex, moved: false };
+        }
       }
     }
     return null;
-  }
-
-  /** Vertical offset where lyrics rows begin (after ruler, optional waveform, padding). */
-  function lyricsTop(): number {
-    const showWave = store.getProject().showWaveform && !!audioEngine.audioBuffer;
-    return RULER_H + TOP_PAD + (showWave ? WAVE_H + TOP_PAD : 0);
-  }
-
-  /** Y position for a row (0..TIMELINE_ROWS-1). Rows have a fixed height. */
-  function rowTopForRow(row: number): number {
-    return lyricsTop() + row * ROW_H;
   }
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -98,21 +119,23 @@ export function createTimeline(): { root: HTMLElement } {
     if (hit) {
       drag = hit;
       canvas.setPointerCapture(e.pointerId);
-    } else {
-      // Click on empty space → seek.
-      const rect = canvas.getBoundingClientRect();
-      const ms = xToMs(e.clientX - rect.left);
-      audioEngine.seek(ms);
+      return;
     }
+    // Click on empty canvas space → seek.
+    const rect = canvas.getBoundingClientRect();
+    const ms = xToMs(e.clientX - rect.left);
+    audioEngine.seek(ms);
   });
 
   canvas.addEventListener('pointermove', (e) => {
     if (!drag) return;
     const rect = canvas.getBoundingClientRect();
     let ms = xToMs(e.clientX - rect.left);
-    // Clamp: can't drag past the previous or next timed syllable.
+    // Clamp: can't drag past the previous or next timed syllable WITHIN THE SAME TRACK.
     const project = store.getProject();
-    const flat = flatSyllables(project.lines);
+    const track = project.tracks[drag.trackIndex];
+    if (!track) return;
+    const flat = flatSyllables(track.lines);
     const myFlatIdx = flat.findIndex(
       (f) => f.lineIndex === drag!.lineIndex && f.sylIndex === drag!.sylIndex,
     );
@@ -132,10 +155,11 @@ export function createTimeline(): { root: HTMLElement } {
     }
     ms = Math.max(minMs, Math.min(maxMs, ms));
     drag.moved = true;
+    const ti = drag.trackIndex;
     const li = drag.lineIndex;
     const si = drag.sylIndex;
     store.mutate((p) => {
-      const syl = p.lines[li]?.syllables[si];
+      const syl = p.tracks[ti]?.lines[li]?.syllables[si];
       if (syl) syl.startMs = Math.round(ms);
     });
   });
@@ -174,13 +198,63 @@ export function createTimeline(): { root: HTMLElement } {
     playheadMs = t;
     draw();
   });
-  store.subscribe(draw);
+  store.subscribe(() => {
+    renderGutter();
+    draw();
+  });
   // Reflect recording state so we can preview the next syllable at the playhead.
   timingCapture.onState((isRecording, cursor) => {
     recording = isRecording;
     recordCursor = cursor;
     draw();
   });
+
+  // --- Gutter (left headers) ---
+  // Rebuilt only when the set of tracks, their names or the active id changes,
+  // or the waveform visibility flips — NOT on every frame. Each header lines
+  // up with its canvas row because they share the same layout constants.
+  let lastGutterSig = '';
+  function renderGutter(): void {
+    const project = store.getProject();
+    const showWave = project.showWaveform && !!audioEngine.audioBuffer;
+    const sig =
+      project.tracks.map((t) => `${t.id}:${t.name}`).join('|') +
+      '@' +
+      project.activeTrackId +
+      (showWave ? '+w' : '');
+    if (sig === lastGutterSig) return;
+    lastGutterSig = sig;
+    gutter.innerHTML = '';
+
+    // Ruler alignment spacer (keeps the headers below the ruler line).
+    const rulerSpacer = document.createElement('div');
+    rulerSpacer.className = 'timeline-gutter-ruler';
+    gutter.appendChild(rulerSpacer);
+
+    // Waveform header ("минус"), same height as the waveform block on the canvas.
+    if (showWave) {
+      const waveHead = document.createElement('div');
+      waveHead.className = 'timeline-wave-head';
+      waveHead.textContent = 'минус';
+      gutter.appendChild(waveHead);
+    }
+
+    // One header per track.
+    for (const track of project.tracks) {
+      const th = document.createElement('div');
+      th.className = 'timeline-track-head' + (track.id === project.activeTrackId ? ' active' : '');
+      th.title = 'Сделать эту дорожку активной';
+      const name = document.createElement('span');
+      name.className = 'timeline-track-name';
+      name.textContent = track.name;
+      th.appendChild(name);
+      th.addEventListener('click', () => {
+        if (track.id === store.getProject().activeTrackId) return;
+        store.mutate((p) => (p.activeTrackId = track.id));
+      });
+      gutter.appendChild(th);
+    }
+  }
 
   function fmtTime(ms: number): string {
     const s = Math.floor(ms / 1000);
@@ -194,8 +268,8 @@ export function createTimeline(): { root: HTMLElement } {
     const dpr = window.devicePixelRatio || 1;
     const showWave = project.showWaveform && !!audioEngine.audioBuffer;
     const waveBlock = showWave ? WAVE_H + TOP_PAD : 0;
-    // Fixed height: ruler + waveform + exactly TIMELINE_ROWS rows.
-    const cssH = RULER_H + TOP_PAD + waveBlock + TIMELINE_ROWS * ROW_H + 8;
+    // Height: ruler + waveform + one row per track.
+    const cssH = RULER_H + TOP_PAD + waveBlock + project.tracks.length * (ROW_H + TRACK_PAD) + 4;
     const cssW = contentWidth();
     if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
       canvas.width = Math.round(cssW * dpr);
@@ -207,7 +281,6 @@ export function createTimeline(): { root: HTMLElement } {
     ctx.clearRect(0, 0, cssW, cssH);
 
     // Ruler ticks
-    ctx.fillStyle = '#9498b8';
     ctx.font = '11px system-ui';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
@@ -240,38 +313,49 @@ export function createTimeline(): { root: HTMLElement } {
       ctx.fillRect(0, waveY + WAVE_H, cssW, 1);
     }
 
-    // Rows + syllables. IMPORTANT: only TIMED syllables are drawn. Untimed ones
+    // One row per track. IMPORTANT: only TIMED syllables are drawn. Untimed ones
     // are skipped — this is intentional (see buildTimings comment). Do not change.
-    // Syllables cycle through TIMELINE_ROWS rows by their global flat index.
-    const flat = flatSyllables(project.lines);
-    for (let i = 0; i < flat.length; i++) {
-      const { lineIndex, sylIndex, syl } = flat[i];
-      if (syl.startMs === null) continue;
-      const rowY = rowTopForRow(i % TIMELINE_ROWS);
+    const activeId = project.activeTrackId;
+    for (let ti = 0; ti < project.tracks.length; ti++) {
+      const track = project.tracks[ti];
+      const isActive = track.id === activeId;
+      const rowY = trackTopForIndex(ti);
 
-      const mx = msToX(syl.startMs as number);
-
-      // syllable text label
-      ctx.fillStyle = '#7a7f9e';
-      ctx.font = '11px system-ui';
-      ctx.textBaseline = 'middle';
-      const label = syl.text.trim();
-      if (label) {
-        ctx.fillText(label.slice(0, 10), mx + MARKER_W + 4, rowY + ROW_H / 2);
+      // Active track subtle highlight band.
+      if (isActive) {
+        ctx.fillStyle = 'rgba(255,225,77,0.06)';
+        ctx.fillRect(0, rowY - 2, cssW, ROW_H + 4);
       }
 
-      // fill bar to the right up to next syllable start (shows duration visually)
-      const next = nextStartMs(lineIndex, sylIndex, project);
-      const endX = next !== null ? msToX(next) : msToX(durationMs());
-      const grad = ctx.createLinearGradient(mx, 0, endX, 0);
-      grad.addColorStop(0, 'rgba(255,225,77,0.55)');
-      grad.addColorStop(1, 'rgba(255,225,77,0.10)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(mx, rowY + ROW_H / 2 - 2, Math.max(2, endX - mx), 4);
+      const flat = flatSyllables(track.lines);
+      for (let i = 0; i < flat.length; i++) {
+        const { lineIndex, sylIndex, syl } = flat[i];
+        if (syl.startMs === null) continue;
 
-      // marker handle — thin 1px line
-      ctx.fillStyle = '#ffe14d';
-      ctx.fillRect(mx, rowY, MARKER_W, ROW_H);
+        const mx = msToX(syl.startMs as number);
+
+        // syllable text label
+        ctx.fillStyle = '#7a7f9e';
+        ctx.font = '11px system-ui';
+        ctx.textBaseline = 'middle';
+        const label = syl.text.trim();
+        if (label) {
+          ctx.fillText(label.slice(0, 10), mx + MARKER_W + 4, rowY + ROW_H / 2);
+        }
+
+        // fill bar to the right up to next syllable start (shows duration visually)
+        const next = nextStartMs(track.lines, lineIndex, sylIndex);
+        const endX = next !== null ? msToX(next) : msToX(durationMs());
+        const grad = ctx.createLinearGradient(mx, 0, endX, 0);
+        grad.addColorStop(0, 'rgba(255,225,77,0.55)');
+        grad.addColorStop(1, 'rgba(255,225,77,0.10)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(mx, rowY + ROW_H / 2 - 2, Math.max(2, endX - mx), 4);
+
+        // marker handle — thin 1px line
+        ctx.fillStyle = '#ffe14d';
+        ctx.fillRect(mx, rowY, MARKER_W, ROW_H);
+      }
     }
 
     // Playhead (the red bar that sweeps across the timeline).
@@ -280,8 +364,10 @@ export function createTimeline(): { root: HTMLElement } {
     ctx.fillRect(px, 0, 2, cssH);
 
     // While recording, show the next syllable to be stamped just to the right of
-    // the playhead, so the user can see what they're about to time.
+    // the playhead, in the active track's row.
     if (recording) {
+      const activeIdx = project.tracks.findIndex((t) => t.id === activeId);
+      const flat = activeIdx >= 0 ? flatSyllables(project.tracks[activeIdx].lines) : [];
       const next = flat[recordCursor];
       if (next && next.syl.startMs === null) {
         const label = (next.syl.text.trim() || '•').slice(0, 14);
@@ -289,7 +375,6 @@ export function createTimeline(): { root: HTMLElement } {
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'left';
         const labelX = px + 6;
-        // Pill background for legibility against the timeline.
         const padX = 5;
         const tw = ctx.measureText(label).width;
         const pillY = RULER_H + 4;
@@ -319,8 +404,8 @@ export function createTimeline(): { root: HTMLElement } {
     ctx.closePath();
   }
 
-  function nextStartMs(lineIndex: number, sylIndex: number, project: Project): number | null {
-    const flat = flatSyllables(project.lines);
+  function nextStartMs(lines: Line[], lineIndex: number, sylIndex: number): number | null {
+    const flat = flatSyllables(lines);
     const i = flat.findIndex((f) => f.lineIndex === lineIndex && f.sylIndex === sylIndex);
     for (let j = i + 1; j < flat.length; j++) {
       if (flat[j].syl.startMs !== null) return flat[j].syl.startMs;
@@ -338,7 +423,8 @@ export function createTimeline(): { root: HTMLElement } {
     return 60000;
   }
 
-  // initial draw after layout
+  // initial build after layout
+  renderGutter();
   requestAnimationFrame(draw);
 
   return { root };

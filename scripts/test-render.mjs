@@ -35,6 +35,19 @@ await build({
 
 const { renderFrame } = await import(pathToFileURL(outFile).href);
 
+// Build a second bundle that also exports the timing helpers for white-box tests.
+const timingOut = join(outDir, 'timing-bundle.mjs');
+await build({
+  entryPoints: [join(root, 'src/lib/text_renderers/helpers.ts')],
+  bundle: true,
+  format: 'esm',
+  platform: 'neutral',
+  outfile: timingOut,
+  logLevel: 'silent',
+});
+const timingMod = await import(pathToFileURL(timingOut).href);
+const { buildTimings, progress } = timingMod;
+
 /** Build a recording fake context implementing exactly the methods render uses. */
 function makeFakeCtx(measure = 40) {
   const calls = [];
@@ -92,7 +105,7 @@ function makeFakeCtx(measure = 40) {
     rect: (...a) => calls.push(['rect', ...a]),
     clip: () => calls.push(['clip']),
     fillText: (text, x, y) => calls.push(['fillText', text, Math.round(x), Math.round(y), state.fillStyle]),
-    strokeText: (text, x, y) => calls.push(['strokeText', text, Math.round(x), Math.round(y)]),
+    strokeText: (text, x, y) => calls.push(['strokeText', text, Math.round(x), Math.round(y), state.strokeStyle]),
   };
   return { ctx, calls };
 }
@@ -118,42 +131,57 @@ const project = {
   fps: 30,
   width: 1920,
   height: 1080,
-  style: {
-    fontFamily: 'Arial',
-    fontSize: 64,
-    fontWeight: 700,
-    lineHeight: 1.4,
-    textAlign: 'center',
-    colorBase: 'rgba(255,255,255,0.35)',
-    colorHighlight: '#ffe14d',
-    strokeWidth: 3,
-    strokeColor: '#000',
-    glowBlur: 24,
-    glowColor: '#ffb400',
+  background: {
     bgType: 'color',
     bgColor: '#0e0f1a',
     bgColors: ['#1a1033', '#0e0f1a'],
     bgImageDataUrl: null,
-    layout: 'scroller',
   },
-  rendererSettings: {
-    scroller: { visibleLines: 8 },
-  },
-  lines: [
+  tracks: [
     {
-      syllables: [
-        { text: 'При', startMs: 0 },
-        { text: 'вет', startMs: 1000 },
-        { text: ' мир', startMs: 2000 },
-      ],
-    },
-    {
-      syllables: [
-        { text: 'Как', startMs: 3000 },
+      id: 't1',
+      name: 'Дорожка 1',
+      style: {
+        fontFamily: 'Arial',
+        fontSize: 64,
+        fontWeight: 700,
+        lineHeight: 1.4,
+        textAlign: 'center',
+        colorBase: 'rgba(255,255,255,0.35)',
+        colorHighlight: '#ffe14d',
+        strokeWidth: 3,
+        strokeColor: '#000',
+        strokeColorActive: '#000',
+        strokeColorInactive: '#010101',
+        glowBlur: 24,
+        glowColor: '#ffb400',
+        layout: 'scroller',
+      },
+      rendererSettings: {
+        scroller: { visibleLines: 8 },
+      },
+      lines: [
+        {
+          syllables: [
+            { text: 'При', startMs: 0 },
+            { text: 'вет', startMs: 1000 },
+            { text: ' мир', startMs: 2000 },
+          ],
+        },
+        {
+          syllables: [
+            { text: 'Как', startMs: 3000 },
+          ],
+        },
       ],
     },
   ],
 };
+
+/** Helper: the single track of the default `project` fixture (tests mutate it). */
+function track(p = project) {
+  return p.tracks[0];
+}
 
 console.log('Renderer logic tests\n');
 
@@ -197,7 +225,7 @@ console.log('Renderer logic tests\n');
   // syllable.text includes leading space for space-separated ones per the parser,
   // but layout uses `sep` to insert the space. We test the rendered X positions.
   const p = JSON.parse(JSON.stringify(project));
-  p.lines = [
+  track(p).lines = [
     {
       syllables: [
         { text: 'При', startMs: 0, sep: '' },
@@ -226,7 +254,7 @@ console.log('Renderer logic tests\n');
 {
   const { ctx, calls } = makeFakeCtx(40);
   const p = JSON.parse(JSON.stringify(project));
-  p.style.bgType = 'gradient';
+  p.background.bgType = 'gradient';
   renderFrame(ctx, 0, p);
   assert(count(calls, 'createLinearGradient') === 1, 'gradient background builds a gradient');
 }
@@ -235,7 +263,7 @@ console.log('Renderer logic tests\n');
 {
   const { ctx, calls } = makeFakeCtx(40);
   const p = JSON.parse(JSON.stringify(project));
-  p.style.strokeWidth = 0;
+  track(p).style.strokeWidth = 0;
   renderFrame(ctx, 0, p);
   assert(count(calls, 'strokeText') === 0, 'strokeWidth=0 disables outline');
 }
@@ -245,7 +273,7 @@ console.log('Renderer logic tests\n');
 {
   const { ctx, calls } = makeFakeCtx(40);
   const p = JSON.parse(JSON.stringify(project));
-  p.lines[0].syllables[1].startMs = null; // "вет" untimed
+  track(p).lines[0].syllables[1].startMs = null; // "вет" untimed
   renderFrame(ctx, 500, p);
   const texts = calls.filter((c) => c[0] === 'fillText').map((c) => c[1]);
   assert(!texts.includes('вет'), 'untimed syllable is NOT rendered');
@@ -255,7 +283,7 @@ console.log('Renderer logic tests\n');
 {
   const { ctx, calls } = makeFakeCtx(40);
   const p = JSON.parse(JSON.stringify(project));
-  p.lines.forEach((l) => l.syllables.forEach((s) => (s.startMs = null)));
+  track(p).lines.forEach((l) => l.syllables.forEach((s) => (s.startMs = null)));
   renderFrame(ctx, 1500, p);
   assert(count(calls, 'fillText') === 0, 'all-untimed renders no text');
   assert(count(calls, 'strokeText') === 0, 'all-untimed renders no strokes');
@@ -265,8 +293,8 @@ console.log('Renderer logic tests\n');
 {
   const { ctx, calls } = makeFakeCtx(40);
   const p = JSON.parse(JSON.stringify(project));
-  p.lines[0].syllables[1].startMs = null;
-  p.lines[0].syllables[2].startMs = null;
+  track(p).lines[0].syllables[1].startMs = null;
+  track(p).lines[0].syllables[2].startMs = null;
   renderFrame(ctx, 100, p);
   const texts = new Set(calls.filter((c) => c[0] === 'fillText').map((c) => c[1]));
   assert(texts.has('При'), 'timed syllable renders');
@@ -278,9 +306,9 @@ console.log('Renderer logic tests\n');
   const { ctx, calls } = makeFakeCtx(40);
   // 6 lines, each with one timed syllable 1s apart; line 0 active at t=0.
   const p = JSON.parse(JSON.stringify(project));
-  p.style.layout = 'scroller';
-  p.rendererSettings.scroller.visibleLines = 4;
-  p.lines = Array.from({ length: 6 }, (_, i) => ({
+  track(p).style.layout = 'scroller';
+  track(p).rendererSettings.scroller.visibleLines = 4;
+  track(p).lines = Array.from({ length: 6 }, (_, i) => ({
     syllables: [{ text: `L${i}`, startMs: i * 1000 }],
   }));
   p.durationMs = 7000;
@@ -295,10 +323,10 @@ console.log('Renderer logic tests\n');
 // Test 11: 'scroller' — constant speed + each line at CENTER at its anchor time.
 {
   const p = JSON.parse(JSON.stringify(project));
-  p.style.layout = 'scroller';
-  p.rendererSettings.scroller.visibleLines = 8;
+  track(p).style.layout = 'scroller';
+  track(p).rendererSettings.scroller.visibleLines = 8;
   // Evenly-spaced lines (0, 1000, 2000, ...) so speed is well-defined.
-  p.lines = Array.from({ length: 10 }, (_, i) => ({ syllables: [{ text: `W${i}`, startMs: i * 1000, sep: '' }] }));
+  track(p).lines = Array.from({ length: 10 }, (_, i) => ({ syllables: [{ text: `W${i}`, startMs: i * 1000, sep: '' }] }));
   p.durationMs = 12000;
 
   const yOf = (label, t) => {
@@ -328,10 +356,10 @@ console.log('Renderer logic tests\n');
 // so the scroll pace matches the spacing.
 {
   const p = JSON.parse(JSON.stringify(project));
-  p.style.layout = 'scroller';
-  p.rendererSettings.scroller.visibleLines = 4;
+  track(p).style.layout = 'scroller';
+  track(p).rendererSettings.scroller.visibleLines = 4;
   // 10 lines evenly spaced so the global scroll speed matches the N=4 spacing.
-  p.lines = Array.from({ length: 10 }, (_, i) => ({ syllables: [{ text: `X${i}`, startMs: i * 2000 }] }));
+  track(p).lines = Array.from({ length: 10 }, (_, i) => ({ syllables: [{ text: `X${i}`, startMs: i * 2000 }] }));
   p.durationMs = 22000;
   const rec = makeFakeCtx(40);
   renderFrame(rec.ctx, 5000, p); // mid-scroll
@@ -344,9 +372,9 @@ console.log('Renderer logic tests\n');
 // bottom is unfilled (progress 0) until it reaches the vertical middle.
 {
   const p = JSON.parse(JSON.stringify(project));
-  p.style.layout = 'scroller';
-  p.rendererSettings.scroller.visibleLines = 4;
-  p.lines = [
+  track(p).style.layout = 'scroller';
+  track(p).rendererSettings.scroller.visibleLines = 4;
+  track(p).lines = [
     { syllables: [{ text: 'A', startMs: 1000 }] },
     { syllables: [{ text: 'B', startMs: 2000 }] },
   ];
@@ -365,9 +393,9 @@ console.log('Renderer logic tests\n');
 // line is BELOW the previous one (not above, which was the regression bug).
 {
   const p = JSON.parse(JSON.stringify(project));
-  p.style.layout = 'scroller';
-  p.rendererSettings.scroller.visibleLines = 8;
-  p.lines = [
+  track(p).style.layout = 'scroller';
+  track(p).rendererSettings.scroller.visibleLines = 8;
+  track(p).lines = [
     { syllables: [{ text: 'FIRST', startMs: 0 }] },
     { syllables: [{ text: 'SECOND', startMs: 1000 }] },
     { syllables: [{ text: 'THIRD', startMs: 2000 }] },
@@ -388,5 +416,167 @@ console.log('Renderer logic tests\n');
   assert(yThird > ySecond, `THIRD below SECOND (THIRD=${yThird}, SECOND=${ySecond})`);
 }
 
+// Test 15: MULTIPLE tracks render independently — both tracks' text appears in
+// one frame, proving the orchestrator loops over all tracks.
+{
+  const p = JSON.parse(JSON.stringify(project));
+  p.tracks = [
+    {
+      id: 't1', name: 'Lead',
+      style: { ...track(p).style },
+      rendererSettings: { scroller: { visibleLines: 4 } },
+      lines: [{ syllables: [{ text: 'LEAD', startMs: 0 }] }],
+    },
+    {
+      id: 't2', name: 'Backing',
+      style: { ...track(p).style },
+      rendererSettings: { scroller: { visibleLines: 4 } },
+      lines: [{ syllables: [{ text: 'BACK', startMs: 0 }] }],
+    },
+  ];
+  p.durationMs = 2000;
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 0, p);
+  const texts = new Set(rec.calls.filter((c) => c[0] === 'fillText').map((c) => c[1]));
+  assert(texts.has('LEAD'), 'track 1 (Lead) text renders');
+  assert(texts.has('BACK'), 'track 2 (Backing) text renders');
+}
+
+// ---------------------------------------------------------------------------
+// 'classic' renderer — fixed-slot karaoke (stationary text, cyclical slots,
+// fade in/out). Mirrors the scroller tests but for the new mode.
+// ---------------------------------------------------------------------------
+
+// Test 16: 'classic' draws the active line.
+{
+  const p = JSON.parse(JSON.stringify(project));
+  track(p).style.layout = 'classic';
+  track(p).rendererSettings = { classic: { lineSlots: 4, fadeMs: 1500 } };
+  track(p).lines = [{ syllables: [{ text: 'SONG', startMs: 0 }] }];
+  p.durationMs = 2000;
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 0, p);
+  const texts = new Set(rec.calls.filter((c) => c[0] === 'fillText').map((c) => c[1]));
+  assert(texts.has('SONG'), 'classic renders the active line');
+}
+
+// Test 17: 'classic' cyclical slots — line 5 lands on the same Y as line 1
+// (lineIndex mod N, with N=4). Both are rendered at their own times.
+{
+  const p = JSON.parse(JSON.stringify(project));
+  track(p).style.layout = 'classic';
+  track(p).rendererSettings = { classic: { lineSlots: 4, fadeMs: 0 } };
+  // 5 lines, 1s apart, each one syllable. fadeMs=0 → a line is visible only
+  // during its own window so no overlap clouds the Y comparison.
+  track(p).lines = Array.from({ length: 5 }, (_, i) => ({
+    syllables: [{ text: `L${i}`, startMs: i * 1000 }],
+  }));
+  p.durationMs = 6000;
+  const yAt = (label, t) => {
+    const rec = makeFakeCtx(40);
+    renderFrame(rec.ctx, t, p);
+    const hit = rec.calls.find((c) => c[0] === 'fillText' && c[1] === label);
+    return hit ? hit[3] : null;
+  };
+  // L0 at its start (t=0) and L4 at its start (t=4000) use slot 0 and 4%4=0.
+  const y0 = yAt('L0', 0);
+  const y4 = yAt('L4', 4000);
+  assert(y0 !== null, 'classic renders L0 at its window');
+  assert(y4 !== null, 'classic renders L4 at its window');
+  assert(Math.abs(y0 - y4) < 2, `cyclical: L4 shares slot 0 with L0 (y0=${y0}, y4=${y4})`);
+}
+
+// Test 18: 'classic' fade — a line is NOT drawn before `start - fadeMs`.
+{
+  const p = JSON.parse(JSON.stringify(project));
+  track(p).style.layout = 'classic';
+  track(p).rendererSettings = { classic: { lineSlots: 4, fadeMs: 1000 } };
+  track(p).lines = [{ syllables: [{ text: 'EARLY', startMs: 2000 }] }];
+  p.durationMs = 4000;
+  const rec = makeFakeCtx(40);
+  // start - fadeMs = 1000; at t=500 the line should be invisible (alpha 0).
+  renderFrame(rec.ctx, 500, p);
+  const texts = new Set(rec.calls.filter((c) => c[0] === 'fillText').map((c) => c[1]));
+  assert(!texts.has('EARLY'), 'classic hides a line before its fade-in window');
+  // And at its start it IS visible.
+  const rec2 = makeFakeCtx(40);
+  renderFrame(rec2.ctx, 2000, p);
+  const texts2 = new Set(rec2.calls.filter((c) => c[0] === 'fillText').map((c) => c[1]));
+  assert(texts2.has('EARLY'), 'classic shows a line once its window begins');
+}
+
+// Test 19: 'classic' syllable fill — the active syllable is drawn twice
+// (base + clipped highlight), reusing the shared drawSyllable like scroller.
+{
+  const p = JSON.parse(JSON.stringify(project));
+  track(p).style.layout = 'classic';
+  track(p).rendererSettings = { classic: { lineSlots: 4, fadeMs: 1500 } };
+  track(p).lines = [
+    {
+      syllables: [
+        { text: 'При', startMs: 0, sep: '' },
+        { text: 'вет', startMs: 1000, sep: '/' },
+      ],
+    },
+  ];
+  p.durationMs = 2000;
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 500, p); // halfway through syllable 1
+  const fills = rec.calls.filter((c) => c[0] === 'fillText').map((c) => c[1]);
+  const priCount = fills.filter((t) => t === 'При').length;
+  assert(priCount === 2, `classic fills active syllable twice (base+highlight), got ${priCount}`);
+  assert(count(rec.calls, 'clip') >= 1, 'classic uses clip for the highlight wipe');
+}
+
+// Test 20: last syllable of a line has a FIXED 500ms fill (not stretching to the
+// next line's first syllable). buildTimings drives this for every renderer.
+{
+  const lines = [
+    { syllables: [{ text: 'a', startMs: 0 }, { text: 'b', startMs: 1000 }] }, // last: 'b'
+    { syllables: [{ text: 'c', startMs: 3000 }] }, // next line starts at 3000
+  ];
+  const t = buildTimings(lines, 10000);
+  const lastOfLine0 = t.find((x) => x.syl.text === 'b');
+  const midOfLine0 = t.find((x) => x.syl.text === 'a');
+  assert(lastOfLine0 && lastOfLine0.endMs === 1500, `line-last syllable ends at start+500ms (got ${lastOfLine0?.endMs})`);
+  assert(midOfLine0 && midOfLine0.endMs === 1000, `mid-line syllable ends at next start (got ${midOfLine0?.endMs})`);
+  // Fill completes within the 500ms window: at start+500 progress = 1, and well
+  // before the next line begins (so it isn't slowly filling across the gap).
+  assert(progress(lastOfLine0, 1499) < 1, 'line-last syllable still filling just before 500ms');
+  assert(progress(lastOfLine0, 1500) === 1, 'line-last syllable fully filled at 500ms');
+  assert(progress(lastOfLine0, 2999) === 1, 'line-last syllable stays filled through the gap to next line');
+}
+
+// Test 21: the SONG's very last syllable fills to the song duration (unchanged).
+{
+  const lines = [{ syllables: [{ text: 'end', startMs: 1000 }] }];
+  const t = buildTimings(lines, 5000);
+  assert(t[0].endMs === 5000, `song-last syllable ends at durationMs (got ${t[0].endMs})`);
+  assert(progress(t[0], 5000) === 1, 'song-last syllable fully filled at the end');
+}
+
+// Test 22: outline color follows fill state — unfilled syllable uses the
+// INACTIVE stroke color, a filled syllable the ACTIVE one (KFN FrameColor vs
+// InactiveFrameColor). Applies to every renderer via the shared drawSyllable.
+{
+  const p = JSON.parse(JSON.stringify(project));
+  track(p).style.strokeColorActive = '#112233';
+  track(p).style.strokeColorInactive = '#445566';
+  // One line: "A" filled completely (past its end), "B" not yet started.
+  track(p).lines = [
+    { syllables: [{ text: 'A', startMs: 0, sep: '' }, { text: 'B', startMs: 5000, sep: ' ' }] },
+  ];
+  p.durationMs = 6000;
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 2500, p); // A is fully filled, B is unfilled
+  const strokes = rec.calls.filter((c) => c[0] === 'strokeText');
+  const a = strokes.find((c) => c[1] === 'A');
+  const b = strokes.find((c) => c[1] === 'B');
+  assert(a && a[4] === '#112233', `filled syllable outline = strokeColorActive (got ${a?.[4]})`);
+  assert(b && b[4] === '#445566', `unfilled syllable outline = strokeColorInactive (got ${b?.[4]})`);
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASS ✅' : failures + ' FAILURE(S) ❌'}`);
+// Clean up the temp bundles.
+try { await import('node:fs').then((fs) => { fs.unlinkSync(timingOut); }); } catch { /* temp dir */ }
 if (failures > 0) process.exit(1);

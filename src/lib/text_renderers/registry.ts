@@ -6,13 +6,15 @@
 import { Layout } from '../../types';
 import { TextRenderer, RenderSettingValue } from './types';
 import { scrollerRenderer } from './scroller';
+import { classicRenderer } from './classic';
 
 export const TEXT_RENDERERS: Record<Layout, TextRenderer> = {
   scroller: scrollerRenderer,
+  classic: classicRenderer,
 };
 
 /** List of renderers in display order (for the layout selector). */
-export const RENDERER_LIST: TextRenderer[] = [scrollerRenderer];
+export const RENDERER_LIST: TextRenderer[] = [scrollerRenderer, classicRenderer];
 
 /** Look up a renderer by layout id (falls back to 'scroller'). */
 export function getRenderer(layout: Layout): TextRenderer {

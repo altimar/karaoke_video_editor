@@ -17,33 +17,38 @@ import {
   AudioBufferSource,
   Quality,
 } from 'mediabunny';
-import { Project, Style } from '../types';
+import { Project, TextTrack } from '../types';
 import { renderFrame } from './render';
 
 /**
  * Build a copy of the project scaled to the target resolution, multiplying all
- * pixel-based style values (font size, gaps, stroke, glow) by the same factor.
- * This lets renderFrame draw directly at the output resolution — so there is no
- * separate native-resolution pass followed by a per-frame drawImage downscale,
- * which was the previous export bottleneck. The authored look is preserved
- * because every dimension scales uniformly.
+ * pixel-based text style values (font size, stroke, glow) of EVERY track by the
+ * same factor. This lets renderFrame draw directly at the output resolution — so
+ * there is no separate native-resolution pass followed by a per-frame drawImage
+ * downscale, which was the previous export bottleneck. The authored look is
+ * preserved because every dimension scales uniformly.
  */
 function scaledProject(project: Project, targetW: number, targetH: number): Project {
   const scale = targetH / project.height;
   if (scale === 1) return project; // no scaling needed at native resolution
-  const s: Style = {
-    ...project.style,
-    fontSize: project.style.fontSize * scale,
-    strokeWidth: project.style.strokeWidth * scale,
-    glowBlur: project.style.glowBlur * scale,
-  };
-  return { ...project, width: targetW, height: targetH, style: s };
+  const tracks: TextTrack[] = project.tracks.map((t) => ({
+    ...t,
+    style: {
+      ...t.style,
+      fontSize: t.style.fontSize * scale,
+      strokeWidth: t.style.strokeWidth * scale,
+      glowBlur: t.style.glowBlur * scale,
+    },
+  }));
+  return { ...project, width: targetW, height: targetH, tracks };
 }
 
 export type ProgressFn = (fraction: number) => void;
 
-export class ExportError extends Error {}
-export class ExportCanceledError extends Error {}
+import { ExportError, ExportCanceledError } from './exportErrors';
+// Re-exported from exportErrors so lightweight consumers (kfnExport, dialog) can
+// import them without pulling in the full MP4 pipeline (mediabunny/WebCodecs).
+export { ExportError, ExportCanceledError };
 
 /** Available export qualities: label, height in px, and a target video bitrate. */
 export interface QualityPreset {

@@ -6,6 +6,12 @@
  * is implied by the next syllable's start (or the song duration for the very
  * last syllable). Storing only starts keeps editing simple: you drag a marker
  * and the fill of the previous syllable follows automatically.
+ *
+ * A project has ONE OR MORE text tracks (`TextTrack`). Each track is fully
+ * independent: its own lyrics (lines), text style (font, colors, stroke/glow),
+ * layout mode and per-renderer settings. Tracks render on top of a shared
+ * background; they may overlap visually. Exactly one track is "active" at a
+ * time — it is the target of text editing, timing capture and timeline dragging.
  */
 
 export interface Syllable {
@@ -27,12 +33,16 @@ export interface Line {
 }
 
 /** The lyrics layouts the renderer supports. */
-export type Layout = 'scroller';
+export type Layout = 'scroller' | 'classic';
 
 export type BgType = 'color' | 'gradient' | 'image';
 
-/** Full visual + layout configuration. Every field here is exposed in the UI. */
-export interface Style {
+/**
+ * Text-level visual configuration for ONE track (font, colors, stroke/glow,
+ * layout). Every field here is exposed in the UI and is independent per track.
+ * Background is NOT part of this — it is shared at the project level.
+ */
+export interface TextStyle {
   // --- base text ---
   fontFamily: string;
   fontSize: number; // px at the project's native resolution
@@ -44,43 +54,68 @@ export interface Style {
 
   // --- stroke & glow ---
   strokeWidth: number; // 0 = none
-  strokeColor: string;
+  strokeColorActive: string; // outline of a filled / active syllable (KFN FrameColor)
+  strokeColorInactive: string; // outline of an unfilled syllable (KFN InactiveFrameColor)
   glowBlur: number; // shadowBlur, 0 = none
   glowColor: string;
-
-  // --- background ---
-  bgType: BgType;
-  bgColor: string; // for 'color'
-  bgColors: [string, string]; // for 'gradient' (top -> bottom)
-  bgImageDataUrl: string | null; // for 'image' (kept as data URL for save/load)
 
   // --- layout ---
   layout: Layout;
 }
 
 /**
+ * Shared background configuration for the whole project. Drawn once per frame
+ * behind every text track.
+ */
+export interface Background {
+  bgType: BgType;
+  bgColor: string; // for 'color'
+  bgColors: [string, string]; // for 'gradient' (top -> bottom)
+  bgImageDataUrl: string | null; // for 'image' (kept as data URL for save/load)
+}
+
+/**
  * Per-renderer settings. Keyed by renderer id (a Layout value), then by the
- * setting key declared in the renderer's `settings` spec. Kept on the Project so
+ * setting key declared in the renderer's `settings` spec. Kept on the track so
  * it persists across save/load. Missing entries are merged with renderer defaults.
  */
 export type RendererSettings = Record<string, Record<string, number | boolean>>;
 
+/**
+ * One independent text track. Tracks hold their own lyrics, text style and
+ * renderer settings. They render on top of the shared background, in array
+ * order, and may overlap. Editing, timing capture and timeline dragging all
+ * operate on the project's active track.
+ */
+export interface TextTrack {
+  /** Stable unique id (used to identify the active track and in save/load). */
+  id: string;
+  /** Human-readable name shown in the track switcher. */
+  name: string;
+  lines: Line[];
+  style: TextStyle;
+  /** Per-renderer settings (visibleLines for scroller, etc.). Merged with defaults. */
+  rendererSettings: RendererSettings;
+}
+
 export interface Project {
   audioFileName: string | null;
   durationMs: number;
-  lines: Line[];
-  style: Style;
+  /** One or more independent text tracks. */
+  tracks: TextTrack[];
+  /** Id of the track currently targeted by editing/recording/timeline. */
+  activeTrackId: string;
+  /** Shared background, drawn behind every track. */
+  background: Background;
   fps: number;
   width: number;
   height: number;
   /** Whether the waveform track is shown above the timeline. UI-only setting. */
   showWaveform: boolean;
-  /** Per-renderer settings (visibleLines for scroller, etc.). Merged with defaults. */
-  rendererSettings: RendererSettings;
 }
 
-/** Default project used on first load. */
-export function createDefaultStyle(): Style {
+/** Default text style used when a new track is created. */
+export function createTextStyle(): TextStyle {
   return {
     fontFamily: 'Arial, Helvetica, sans-serif',
     fontSize: 64,
@@ -91,32 +126,77 @@ export function createDefaultStyle(): Style {
     colorHighlight: '#ffe14d',
 
     strokeWidth: 3,
-    strokeColor: 'rgba(0,0,0,0.85)',
+    strokeColorActive: 'rgba(0,0,0,0.85)',
+    strokeColorInactive: 'rgba(1,1,1,0.85)',
     glowBlur: 24,
     glowColor: 'rgba(255,180,0,0.9)',
-
-    bgType: 'color',
-    bgColor: '#0e0f1a',
-    bgColors: ['#1a1033', '#0e0f1a'],
-    bgImageDataUrl: null,
 
     layout: 'scroller',
   };
 }
 
+/** Default shared background used for new projects. */
+export function createBackground(): Background {
+  return {
+    bgType: 'color',
+    bgColor: '#0e0f1a',
+    bgColors: ['#1a1033', '#0e0f1a'],
+    bgImageDataUrl: null,
+  };
+}
+
+/** Generate a unique id for a new track. Uses crypto.randomUUID when available. */
+export function newTrackId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'track-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+/** Default per-renderer settings for a fresh track. */
+function defaultRendererSettings(): RendererSettings {
+  // Must mirror the renderer defaults declared in text_renderers/*.ts.
+  return {
+    scroller: { visibleLines: 8 },
+    classic: { lineSlots: 4, fadeMs: 1500, offsetX: 0, offsetY: 0 },
+  };
+}
+
+/**
+ * Create a new independent text track. `name` defaults to "Дорожка N" by the
+ * caller (who knows how many tracks already exist); pass an explicit name to
+ * override.
+ */
+export function createTextTrack(name: string, lines?: Line[]): TextTrack {
+  return {
+    id: newTrackId(),
+    name,
+    lines: lines ?? [{ syllables: [{ text: 'Загрузите текст', startMs: null }] }],
+    style: createTextStyle(),
+    rendererSettings: defaultRendererSettings(),
+  };
+}
+
+/**
+ * The track currently targeted by editing, timing capture and timeline dragging.
+ * Falls back to the first track if the active id is stale (e.g. after a delete).
+ */
+export function getActiveTrack(project: Project): TextTrack {
+  return project.tracks.find((t) => t.id === project.activeTrackId) ?? project.tracks[0];
+}
+
+/** Default project used on first load. */
 export function createDefaultProject(): Project {
+  const track = createTextTrack('Дорожка 1');
   return {
     audioFileName: null,
     durationMs: 0,
-    lines: [{ syllables: [{ text: 'Загрузите текст', startMs: null }] }],
-    style: createDefaultStyle(),
+    tracks: [track],
+    activeTrackId: track.id,
+    background: createBackground(),
     fps: 30,
     width: 1920,
     height: 1080,
     showWaveform: true,
-    // Must mirror the renderer defaults declared in text_renderers/*.ts.
-    rendererSettings: {
-      scroller: { visibleLines: 8 },
-    },
   };
 }

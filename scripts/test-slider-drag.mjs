@@ -58,6 +58,12 @@ await build({
 const mod = await import(pathToFileURL(outFile).href + '?t=' + Date.now());
 const { createStylePanel, store } = mod;
 
+/** Read the active track's text style (fontSize/stroke live there now). */
+function activeStyle() {
+  const p = store.getProject();
+  return p.tracks.find((t) => t.id === p.activeTrackId) ?? p.tracks[0];
+}
+
 // Build the panel into the document.
 const container = document.createElement('div');
 document.body.appendChild(container);
@@ -78,7 +84,7 @@ const findSlider = (labelText) =>
 const sizeSlider = findSlider('Размер');
 assert(!!sizeSlider, 'fontSize slider exists');
 
-const before = store.getProject().style.fontSize;
+const before = store.getProject().tracks[0].style.fontSize;
 assert(before === 64, `initial fontSize is 64 (got ${before})`);
 
 // Record the DOM node identity — the crux of the fix.
@@ -91,7 +97,7 @@ for (const v of steps) {
   sizeSlider.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
 }
 
-const after = store.getProject().style.fontSize;
+const after = activeStyle().style.fontSize;
 assert(after === 150, `fontSize reached 150 after the drag (got ${after})`);
 
 // THE key assertion: the slider element is still the SAME node after all the
@@ -112,7 +118,7 @@ assert(!!strokeSlider, 'stroke slider exists');
 const strokeOrig = strokeSlider;
 strokeSlider.value = '10';
 strokeSlider.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
-assert(store.getProject().style.strokeWidth === 10, 'stroke slider writes through to store');
+assert(activeStyle().style.strokeWidth === 10, 'stroke slider writes through to store');
 assert(findSlider('Обводка') === strokeOrig, 'stroke slider DOM node preserved');
 
 console.log(`\n${failures === 0 ? 'ALL PASS ✅' : failures + ' FAILURE(S) ❌'}`);

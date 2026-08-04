@@ -4,22 +4,34 @@
  * built on top of (measuring, filling, stroking a syllable) — they contain no
  * layout-specific positioning logic.
  */
-import { Project, Style, Syllable } from '../../types';
+import { Line, Syllable, TextStyle } from '../../types';
 import { RenderCtx, TimedSyllable } from './types';
 
 /**
- * Build timing info for every TIMED syllable: its start and its (implied) end.
- * End = next syllable's start (across line boundaries). Untimed syllables are
- * dropped entirely — there is nothing to render until timings are captured.
+ * Fixed fill duration for a line's LAST syllable. Without this the last syllable
+ * would stretch all the way to the next line's first syllable (since end = next
+ * start), making it fill very slowly across the inter-line gap. A short fixed
+ * span keeps its fill natural and consistent.
  */
-export function buildTimings(project: Project): TimedSyllable[] {
+const LAST_SYLLABLE_FILL_MS = 500;
+
+/**
+ * Build timing info for every TIMED syllable: its start and its (implied) end.
+ *  - A mid-line syllable ends at the next syllable's start (same line).
+ *  - A line's LAST syllable ends `LAST_SYLLABLE_FILL_MS` later, NOT at the next
+ *    line's start (it shouldn't slowly fill through the inter-line pause).
+ *  - The song's very last syllable ends at `durationMs` (so it fully fills).
+ * Untimed syllables are dropped entirely — there is nothing to render until
+ * timings are captured.
+ */
+export function buildTimings(lines: Line[], durationMs: number): TimedSyllable[] {
   // !!! IMPORTANT: only TIMED syllables (startMs !== null) are included here.
   // !!! Untimed syllables are deliberately EXCLUDED — they do NOT render in the
   // !!! preview or the exported video, and they do NOT appear on the timeline.
   // !!! This is intentional: until a syllable has a timing, there is nothing to
   // !!! show. Do NOT change this without explicit user approval.
   const flat: { syl: Syllable; lineIndex: number; sylIndex: number }[] = [];
-  project.lines.forEach((line, lineIndex) => {
+  lines.forEach((line, lineIndex) => {
     line.syllables.forEach((syl, sylIndex) => {
       if (syl.startMs !== null) flat.push({ syl, lineIndex, sylIndex });
     });
@@ -27,7 +39,20 @@ export function buildTimings(project: Project): TimedSyllable[] {
   const result: TimedSyllable[] = [];
   for (let i = 0; i < flat.length; i++) {
     const startMs = flat[i].syl.startMs as number;
-    const endMs = i + 1 < flat.length ? (flat[i + 1].syl.startMs as number) : Math.max(project.durationMs, startMs + 1);
+    let endMs: number;
+    if (i + 1 >= flat.length) {
+      // Song's last syllable: fill to the song end.
+      endMs = Math.max(durationMs, startMs + 1);
+    } else {
+      const next = flat[i + 1];
+      if (next.lineIndex !== flat[i].lineIndex) {
+        // Last syllable of its line: fixed short fill, not the next line's start.
+        endMs = startMs + LAST_SYLLABLE_FILL_MS;
+      } else {
+        // Mid-line: end at the next syllable's start.
+        endMs = next.syl.startMs as number;
+      }
+    }
     result.push({ syl: flat[i].syl, startMs, endMs, lineIndex: flat[i].lineIndex, sylIndex: flat[i].sylIndex });
   }
   return result;
@@ -52,7 +77,7 @@ export function activeIndex(timings: TimedSyllable[], timeMs: number): number {
 }
 
 /** Configure text font/baseline/alignment on the context. */
-export function applyFont(ctx: RenderCtx, style: Style): void {
+export function applyFont(ctx: RenderCtx, style: TextStyle): void {
   ctx.font = `${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left'; // we position each syllable manually for precise gaps
@@ -84,7 +109,7 @@ export function layoutLine(
   lineIndex: number,
   timeMs: number,
   activeLineIndex: number,
-  _style: Style,
+  _style: TextStyle,
 ): { syllables: LaidSyllable[]; width: number } {
   const lineTimings = timings.filter((t) => t.lineIndex === lineIndex);
   const spaceW = ctx.measureText(' ').width;
@@ -109,7 +134,7 @@ export function layoutLine(
 }
 
 /** Line X origin for the given alignment & container width. */
-export function lineOriginX(style: Style, lineWidth: number, canvasWidth: number): number {
+export function lineOriginX(style: TextStyle, lineWidth: number, canvasWidth: number): number {
   switch (style.textAlign) {
     case 'left':
       return 0;
@@ -126,7 +151,7 @@ export function drawSyllable(
   ls: LaidSyllable,
   originX: number,
   cy: number,
-  style: Style,
+  style: TextStyle,
 ): void {
   const prog = ls.progress;
 
@@ -156,7 +181,10 @@ export function drawSyllable(
   if (style.strokeWidth > 0) {
     ctx.shadowBlur = 0;
     ctx.lineWidth = style.strokeWidth;
-    ctx.strokeStyle = style.strokeColor;
+    // Outline color follows the fill state, mirroring the text fill: a
+    // filled/active syllable uses the active outline, an unfilled one the
+    // inactive outline (KFN FrameColor / InactiveFrameColor).
+    ctx.strokeStyle = ls.progress >= 1 || ls.isActive ? style.strokeColorActive : style.strokeColorInactive;
     ctx.lineJoin = 'round';
     ctx.strokeText(ls.text, drawX, cy);
   }

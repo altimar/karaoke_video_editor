@@ -2,16 +2,23 @@
  * KaraFun (.kfn) file importer.
  *
  * Parses a .kfn binary container and extracts:
- *  - Song.ini (lyrics + timings)
+ *  - Song.ini (lyrics + timings, one or more text effects)
  *  - The embedded audio file (MP3 bytes)
  *
- * Converts them into the project model (Lines + Syllables) and returns the raw
- * audio bytes so AudioEngine can load them.
+ * A KFN file may contain up to two TEXT effects: ID=1 (main lyrics) and ID=2
+ * (alternate). Each becomes an independent text track. Non-text effects
+ * (ID=51 background image, ID=62 background video) are ignored. The renderer
+ * mode of an imported track is inferred from its `Trajectory` field:
+ * `PlainBottomToTop*...` → scroller; absence → classic (fixed slots), using
+ * `LineCount` for the slot count and `OffsetX/OffsetY` for the block offset.
+ *
+ * Timings within one effect are a flat sequence (Sync0..SyncN chunks), but they
+ * are LOCAL to that effect — each effect has its own independent Sync array.
  */
-import { Line, Syllable } from '../types';
+import { Line, Syllable, TextStyle, TextTrack, newTrackId, RendererSettings, Background, createBackground } from '../types';
 
 export interface KfnImportResult {
-  project: { lines: Line[]; audioFileName: string };
+  project: { tracks: TextTrack[]; audioFileName: string; background: Background };
   audioBytes: Uint8Array;
 }
 
@@ -25,8 +32,8 @@ interface KfnEntry {
   absOffset: number;
 }
 
-/** Parse the KFN binary into header fields, directory entries, and file data. */
-function parseKfn(data: Uint8Array): { entries: KfnEntry; songIni: string; audioBytes: Uint8Array; audioName: string } {
+/** Parse the KFN binary into directory entries, Song.ini text and audio bytes. */
+function parseKfn(data: Uint8Array): { entries: KfnEntry[]; songIni: string; audioBytes: Uint8Array; audioName: string } {
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const dec = new TextDecoder();
 
@@ -74,50 +81,126 @@ function parseKfn(data: Uint8Array): { entries: KfnEntry; songIni: string; audio
   const songIni = dec.decode(data.slice(songEntry.absOffset, songEntry.absOffset + songEntry.inLen));
   const audioBytes = data.slice(audioEntry.absOffset, audioEntry.absOffset + audioEntry.inLen);
 
-  return { entries: entries[0], songIni, audioBytes, audioName: audioEntry.name };
+  return { entries, songIni, audioBytes, audioName: audioEntry.name };
+}
+
+/** One [EffN] section parsed into a flat key→value map. */
+interface EffectFields {
+  id: number;
+  fields: Map<string, string>;
 }
 
 /**
- * Parse Song.ini text into Lines + Syllables.
- *
- * IMPORTANT: Sync values are NOT mapped per-text-line. In a KFN file, Sync0..SyncN
- * are chunks of timestamps (split into groups of ~40 values each) that together
- * form ONE flat sequence of timestamps for ALL syllables in ALL text lines, in
- * order. We flatten all Sync values into one array and assign them to syllables
- * sequentially as we walk through Text0..TextN.
- *
- * Timings are in centiseconds (1/100 s); we convert to milliseconds (×10).
+ * Split Song.ini into its [EffN] sections. Only text effects (ID=1 or 2) are
+ * returned; background/video effects (ID=51/62) are skipped. Section order in
+ * the file is preserved.
  */
-function parseSongIni(songIni: string): Line[] {
-  const lines: Line[] = [];
+function parseEffects(songIni: string): EffectFields[] {
+  const out: EffectFields[] = [];
+  let current: { name: string; fields: Map<string, string> } | null = null;
+  // `current.name` is the section name WITHOUT brackets (e.g. "Eff1").
+  const isEffect = (name: string): boolean => /^Eff\d+$/.test(name);
+  const flush = (): void => {
+    if (!current || !isEffect(current.name)) return;
+    const id = parseInt(current.fields.get('ID') ?? '0', 10);
+    if (id === 1 || id === 2) {
+      out.push({ id, fields: current.fields });
+    }
+  };
+  for (const rawLine of songIni.split(/\r?\n/)) {
+    const secMatch = rawLine.match(/^\[(\w+)\]\s*$/);
+    if (secMatch) {
+      flush();
+      current = { name: secMatch[1], fields: new Map() };
+      continue;
+    }
+    if (!current) continue;
+    const eq = rawLine.indexOf('=');
+    if (eq > 0) current.fields.set(rawLine.slice(0, eq), rawLine.slice(eq + 1));
+  }
+  flush(); // trailing section
+  return out;
+}
 
-  // Collect Text{n} values in order, and flatten ALL Sync values into one array.
+/**
+ * Extract the background image from an ID=51 effect, if present. Looks up the
+ * effect's `LibImage` filename among the container's image entries (type 3),
+ * reads the raw bytes and converts them to a data URL. Returns null when there
+ * is no background image effect or the referenced file is missing.
+ */
+function extractBackground(songIni: string, entries: KfnEntry[], data: Uint8Array): Background | null {
+  // Find an ID=51 effect and its LibImage reference.
+  let libImage: string | null = null;
+  let current: { name: string; fields: Map<string, string> } | null = null;
+  const isEffect = (name: string): boolean => /^Eff\d+$/.test(name);
+  const flush = (): void => {
+    if (!current || !isEffect(current.name)) return;
+    const id = parseInt(current.fields.get('ID') ?? '0', 10);
+    if (id === 51) libImage = (current.fields.get('LibImage') ?? '').trim() || null;
+  };
+  for (const rawLine of songIni.split(/\r?\n/)) {
+    const secMatch = rawLine.match(/^\[(\w+)\]\s*$/);
+    if (secMatch) {
+      flush();
+      current = { name: secMatch[1], fields: new Map() };
+      continue;
+    }
+    if (!current) continue;
+    const eq = rawLine.indexOf('=');
+    if (eq > 0) current.fields.set(rawLine.slice(0, eq), rawLine.slice(eq + 1));
+  }
+  flush();
+  if (!libImage) return null;
+
+  // Find the image file in the container (by name or any type=3 entry).
+  const imgEntry =
+    entries.find((e) => e.name === libImage) ?? entries.find((e) => e.type === 3);
+  if (!imgEntry) return null;
+
+  const bytes = data.slice(imgEntry.absOffset, imgEntry.absOffset + imgEntry.inLen);
+  const ext = imgEntry.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? 'jpg';
+  const mime = ext === 'jpg' ? 'jpeg' : ext;
+  // Convert raw bytes → base64 data URL.
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  const dataUrl = `data:image/${mime};base64,${btoa(bin)}`;
+  const bg = createBackground();
+  bg.bgType = 'image';
+  bg.bgImageDataUrl = dataUrl;
+  return bg;
+}
+
+/**
+ * Parse ONE effect's Text{n}/Sync{n} into Lines + Syllables.
+ *
+ * Sync values within one effect are a flat sequence (Sync0..SyncN chunks cover
+ * all syllables of that effect in reading order). Timings are centiseconds
+ * (1/100 s); we convert to milliseconds (×10). -1 → untimed (null).
+ */
+function parseEffectLines(fields: Map<string, string>): Line[] {
+  const lines: Line[] = [];
   const textMap = new Map<number, string>();
   let textCount = 0;
-  const allSyncs: number[] = []; // flat: Sync0 values, then Sync1, then Sync2...
+  const allSyncs: number[] = []; // flat: Sync0 values, then Sync1, ...
 
-  for (const rawLine of songIni.split(/\r?\n/)) {
-    const textMatch = rawLine.match(/^Text(\d+)=(.*)$/);
+  for (const [key, value] of fields) {
+    const textMatch = key.match(/^Text(\d+)$/);
     if (textMatch) {
-      textMap.set(parseInt(textMatch[1], 10), textMatch[2]);
+      textMap.set(parseInt(textMatch[1], 10), value);
       continue;
     }
-    const countMatch = rawLine.match(/^TextCount=(\d+)$/);
-    if (countMatch) {
-      textCount = parseInt(countMatch[1], 10);
+    if (key === 'TextCount') {
+      textCount = parseInt(value, 10);
       continue;
     }
-    const syncMatch = rawLine.match(/^Sync(\d+)=(.*)$/);
+    const syncMatch = key.match(/^Sync(\d+)$/);
     if (syncMatch) {
-      const vals = syncMatch[2].split(',').map((v) => parseInt(v.trim(), 10));
+      const vals = value.split(',').map((v) => parseInt(v.trim(), 10));
       allSyncs.push(...vals);
-      continue;
     }
   }
 
-  // Walk through all text lines, splitting each into syllables and consuming
-  // timestamps from the flat allSyncs array in order.
-  const maxIdx = textCount || Math.max(...textMap.keys(), -1);
+  const maxIdx = textCount || (textMap.size ? Math.max(...textMap.keys()) : -1);
   let syncIdx = 0;
 
   for (let i = 0; i <= maxIdx; i++) {
@@ -158,14 +241,124 @@ function parseSongIni(songIni: string): Line[] {
 }
 
 /**
- * Import a .kfn file: extract audio bytes and parse lyrics/timings.
- * Returns a partial project (lines + audio filename) and raw audio bytes.
+/**
+ * Convert a KFN color (`#RRGGBBAA`) to a CSS rgba() string. KaraFun stores colors
+ * as Red,Green,Blue,Alpha (verified on real files: `#00ACFFFF` is opaque cyan —
+ * RR=00 GG=AC BB=FF AA=FF; `#FF0000FF` is opaque red). This is NOT ARGB despite
+ * some references: alpha is the LAST byte.
+ */
+function argbToCss(kfnColor: string): string {
+  const m = /^#([0-9a-fA-F]{8})$/.exec((kfnColor ?? '').trim());
+  if (!m) return 'rgba(255,255,255,1)';
+  const r = parseInt(m[1].slice(0, 2), 16);
+  const g = parseInt(m[1].slice(2, 4), 16);
+  const b = parseInt(m[1].slice(4, 6), 16);
+  const a = parseInt(m[1].slice(6, 8), 16) / 255;
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+/**
+ * Default text style for an imported track (before per-effect overrides).
+ * Fields NOT present in the KFN format start neutral/disabled so the imported
+ * track doesn't inherit unrelated project defaults. In particular glow (our
+ * extra effect with no KFN equivalent) is turned OFF.
+ */
+function defaultImportedStyle(): TextStyle {
+  return {
+    fontFamily: 'Arial, Helvetica, sans-serif',
+    fontSize: 64,
+    fontWeight: 700,
+    lineHeight: 1.4,
+    textAlign: 'center',
+    colorBase: 'rgba(255,255,255,0.35)',
+    colorHighlight: '#ffe14d',
+    strokeWidth: 3,
+    strokeColorActive: 'rgba(0,0,0,0.85)',
+    strokeColorInactive: 'rgba(1,1,1,0.85)',
+    glowBlur: 0, // no KFN equivalent — start disabled
+    glowColor: 'rgba(255,180,0,0.9)',
+    layout: 'scroller',
+  };
+}
+
+/** Parse `Font=family*size` (KFN size units; 18 ≈ our 64px). */
+function applyFont(style: TextStyle, fontField: string | undefined): void {
+  if (!fontField) return;
+  const parts = fontField.split('*');
+  if (parts[0]) style.fontFamily = `${parts[0]}, sans-serif`;
+  if (parts[1]) {
+    const kfnSize = parseInt(parts[1], 10);
+    if (!Number.isNaN(kfnSize)) style.fontSize = Math.round((kfnSize * 64) / 18);
+  }
+}
+
+/**
+ * Infer a track's renderer mode + settings from an effect's fields.
+ * `Trajectory` with PlainBottomToTop → scroller; otherwise classic (fixed
+ * slots), using LineCount → lineSlots and OffsetX/OffsetY → offset.
+ */
+function applyLayout(style: TextStyle, fields: Map<string, string>): RendererSettings {
+  const traj = (fields.get('Trajectory') ?? '').toLowerCase();
+  const settings: RendererSettings = {};
+  if (traj.includes('bottomtotop') || traj.includes('plain')) {
+    style.layout = 'scroller';
+    settings.scroller = { visibleLines: 8 };
+    return settings;
+  }
+  // No scroll trajectory → classic fixed-slot karaoke.
+  style.layout = 'classic';
+  const lineCount = parseInt(fields.get('LineCount') ?? '4', 10);
+  const lineSlots = Number.isNaN(lineCount) ? 4 : Math.max(2, Math.min(16, lineCount));
+  const offX = parseInt(fields.get('OffsetX') ?? '0', 10) || 0;
+  const offY = parseInt(fields.get('OffsetY') ?? '0', 10) || 0;
+  settings.classic = { lineSlots, fadeMs: 1500, offsetX: offX, offsetY: offY };
+  return settings;
+}
+
+/** Convert one parsed text effect into an independent TextTrack. */
+function effectToTrack(effect: EffectFields, index: number): TextTrack {
+  const lines = parseEffectLines(effect.fields);
+  const style = defaultImportedStyle();
+  applyFont(style, effect.fields.get('Font'));
+  // Colors: ActiveColor → highlight (filling), InactiveColor → base.
+  if (effect.fields.has('ActiveColor')) style.colorHighlight = argbToCss(effect.fields.get('ActiveColor')!);
+  if (effect.fields.has('InactiveColor')) style.colorBase = argbToCss(effect.fields.get('InactiveColor')!);
+  if (effect.fields.has('FrameColor')) style.strokeColorActive = argbToCss(effect.fields.get('FrameColor')!);
+  if (effect.fields.has('InactiveFrameColor')) style.strokeColorInactive = argbToCss(effect.fields.get('InactiveFrameColor')!);
+  // Stroke width: KaraFun encodes it as the FrameType name (Frame1, Frame2, …).
+  // Frame0 / none → no outline.
+  const frameType = (effect.fields.get('FrameType') ?? '').match(/Frame(\d+)/i);
+  if (frameType) style.strokeWidth = parseInt(frameType[1], 10);
+  const rendererSettings = applyLayout(style, effect.fields);
+  // Track name: KaraFun stores it in Caption. Fall back to a sensible default.
+  const caption = (effect.fields.get('Caption') ?? '').trim();
+  const name = caption || (effect.id === 1 ? 'Основная' : effect.id === 2 ? 'Альтернативная' : `Дорожка ${index + 1}`);
+  return {
+    id: newTrackId(),
+    name,
+    lines,
+    style,
+    rendererSettings,
+  };
+}
+
+/**
+ * Import a .kfn file: extract audio bytes and parse lyrics/timings into one or
+ * more independent text tracks (one per text effect, ID=1 or 2). Returns the
+ * tracks and raw audio bytes.
  */
 export function importFromKfn(data: Uint8Array): KfnImportResult {
   const parsed = parseKfn(data);
-  const lines = parseSongIni(parsed.songIni);
+  const effects = parseEffects(parsed.songIni);
+  const tracks = effects
+    .map((eff, i) => effectToTrack(eff, i))
+    // Drop tracks with no syllables at all (empty placeholder effects).
+    .filter((t) => t.lines.some((l) => l.syllables.length > 0));
+  if (tracks.length === 0) throw new Error('В KFN не найдено текстовых дорожек');
+  // Background image (optional): extracted from an ID=51 effect + container file.
+  const background = extractBackground(parsed.songIni, parsed.entries, data) ?? createBackground();
   return {
-    project: { lines, audioFileName: parsed.audioName },
+    project: { tracks, audioFileName: parsed.audioName, background },
     audioBytes: parsed.audioBytes,
   };
 }
