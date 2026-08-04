@@ -140,6 +140,7 @@ const project = {
   tracks: [
     {
       id: 't1',
+      type: 'text',
       name: 'Дорожка 1',
       style: {
         fontFamily: 'Arial',
@@ -150,7 +151,6 @@ const project = {
         colorBase: 'rgba(255,255,255,0.35)',
         colorHighlight: '#ffe14d',
         strokeWidth: 3,
-        strokeColor: '#000',
         strokeColorActive: '#000',
         strokeColorInactive: '#010101',
         glowBlur: 24,
@@ -422,13 +422,15 @@ console.log('Renderer logic tests\n');
   const p = JSON.parse(JSON.stringify(project));
   p.tracks = [
     {
-      id: 't1', name: 'Lead',
+      id: 't1',
+      type: 'text', name: 'Lead',
       style: { ...track(p).style },
       rendererSettings: { scroller: { visibleLines: 4 } },
       lines: [{ syllables: [{ text: 'LEAD', startMs: 0 }] }],
     },
     {
-      id: 't2', name: 'Backing',
+      id: 't2',
+      type: 'text', name: 'Backing',
       style: { ...track(p).style },
       rendererSettings: { scroller: { visibleLines: 4 } },
       lines: [{ syllables: [{ text: 'BACK', startMs: 0 }] }],

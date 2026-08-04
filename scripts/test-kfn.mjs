@@ -39,11 +39,11 @@ function style(over = {}) {
 function makeProject() {
   return {
     audioFileName: 'test-song.mp3', durationMs: 10000, fps: 30, width: 1920, height: 1080,
-    showWaveform: true,
     background: { bgType: 'color', bgColor: '#000', bgColors: ['#000', '#111'], bgImageDataUrl: null },
     tracks: [
       {
-        id: 't1', name: 'Основная',
+        id: 't1',
+      type: 'text', name: 'Основная',
         style: style({
           layout: 'scroller',
           colorHighlight: 'rgba(255,228,77,1)',
@@ -65,7 +65,8 @@ function makeProject() {
         ],
       },
       {
-        id: 't2', name: 'Альтернативная',
+        id: 't2',
+      type: 'text', name: 'Альтернативная',
         style: style({ layout: 'classic' }),
         rendererSettings: { classic: { lineSlots: 4, fadeMs: 1500, offsetX: 10, offsetY: 20 } },
         lines: [
@@ -181,7 +182,10 @@ assert(imported.project.audioFileName === 'test-song.mp3', `audio filename prese
 assert(imported.audioBytes.length === fakeAudio.length, `audio bytes length matches (${imported.audioBytes.length})`);
 
 const it = imported.project.tracks;
-assert(it.length === 2, `2 tracks imported (got ${it.length})`);
+// 2 text tracks + 1 audio track (the embedded audio becomes an audio track).
+assert(it.length === 3, `3 tracks imported (2 text + 1 audio) (got ${it.length})`);
+assert(it[2].type === 'audio', `track 3 is an audio track (got ${it[2].type})`);
+assert(it[2].audioFileName === 'test-song.mp3', `audio track keeps filename (got "${it[2].audioFileName}")`);
 
 // Track 1: scroller, lyrics round-trip.
 const s0 = it[0].lines.flatMap(l => l.syllables);
@@ -256,7 +260,8 @@ await (async () => {
 await (async () => {
   const p = makeProject();
   p.tracks.push({
-    id: 't3', name: 'Третья',
+    id: 't3',
+      type: 'text', name: 'Третья',
     style: style({ layout: 'scroller' }),
     rendererSettings: { scroller: { visibleLines: 8 } },
     lines: [{ syllables: [{ text: 'Extra', startMs: 4000, sep: '' }] }],

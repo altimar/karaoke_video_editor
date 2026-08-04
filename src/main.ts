@@ -9,6 +9,9 @@ import { createPreview } from './ui/preview';
 import { createStylePanel } from './ui/stylePanel';
 import { createTimeline } from './ui/timeline';
 import { canExport } from './lib/export';
+import { store } from './state/store';
+import { audioEngine } from './lib/audioEngine';
+import { getActiveAudioTrack } from './types';
 
 function toast(msg: string, kind: 'ok' | 'err' | 'info' = 'info'): void {
   const node = document.createElement('div');
@@ -56,6 +59,13 @@ function main(): void {
 
   // Timeline at the bottom
   app.appendChild(createTimeline().root);
+
+  // Keep the live audio gain in sync with the active audio track's automation.
+  store.subscribe(() => {
+    const p = store.getProject();
+    const at = getActiveAudioTrack(p);
+    audioEngine.applyVolumeAutomation(at?.volumeAutomation ?? [], p.durationMs);
+  });
 }
 
 function helpCard(): HTMLElement {

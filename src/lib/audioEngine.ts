@@ -10,6 +10,8 @@
  * way to play sound in the browser; AudioContext is only used for decoding.
  */
 import { Project } from '../types';
+import { VolumePoint } from '../types';
+import { gainAtTime } from './volumeAutomation';
 
 export type AudioStateListener = (playing: boolean) => void;
 export type TimeListener = (timeMs: number) => void;
@@ -19,6 +21,11 @@ export class AudioEngine {
   private ctx: AudioContext | null = null;
   private buffer: AudioBuffer | null = null;
   private url: string | null = null;
+  /** Web Audio graph for live playback: source → gain → destination. */
+  private sourceNode: MediaElementAudioSourceNode | null = null;
+  private gainNode: GainNode | null = null;
+  /** Currently applied automation, so we can re-apply on seek/replay. */
+  private automation: VolumePoint[] = [];
 
   private audioStateListeners = new Set<AudioStateListener>();
   private timeListeners = new Set<TimeListener>();
@@ -77,9 +84,35 @@ export class AudioEngine {
       const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctor();
     }
+    // Build the playback graph once: <audio> → GainNode → destination.
+    // createMediaElementSource can be called only ONCE per element, so we do it
+    // lazily and keep the node. The <audio> element still drives seek/pause.
+    if (!this.sourceNode) {
+      this.sourceNode = this.ctx.createMediaElementSource(this.audio);
+      this.gainNode = this.ctx.createGain();
+      this.sourceNode.connect(this.gainNode);
+      this.gainNode.connect(this.ctx.destination);
+    }
     const arrBuf = (bytes.buffer as ArrayBuffer).slice(0);
     // decodeAudioData copies the buffer, so arrBuf can be reused/dropped.
     this.buffer = await this.ctx.decodeAudioData(arrBuf.slice(0));
+    // Re-apply automation (if any was set before this load).
+    this.applyVolumeAutomation(this.automation, this.durationMs);
+  }
+
+  /**
+   * Store the volume-automation points. The actual gain is applied each
+   * animation frame in the playback time loop (see startTimeLoop), reading the
+   * gain for the current playback position. This avoids the clock-drift issues
+   * of programming setValueAtTime against MediaElementAudioSourceNode (whose
+   * AudioContext clock and <audio> currentTime run independently and drift
+   * apart on seek/pause). Imperative .value writes are sample-accurate enough
+   * for a UI-driven envelope and stay perfectly in sync with playback.
+   */
+  applyVolumeAutomation(points: VolumePoint[], _durationMs: number): void {
+    this.automation = points;
+    // Apply immediately so a change while paused is reflected on next play.
+    if (this.gainNode) this.gainNode.gain.value = gainAtTime(points, this.currentTimeMs);
   }
 
   async play(): Promise<void> {
@@ -107,6 +140,9 @@ export class AudioEngine {
   seek(timeMs: number): void {
     this.audio.currentTime = Math.max(0, timeMs / 1000);
     this.notifyTime(timeMs);
+    // Re-program automation from the new playback position so gain is correct
+    // after a jump (AudioParam automation is timeline-based, not seek-aware).
+    this.applyVolumeAutomation(this.automation, this.durationMs);
   }
 
   /** Skip by delta milliseconds, keeping within bounds. */
@@ -129,7 +165,11 @@ export class AudioEngine {
   private startTimeLoop(): void {
     this.stopTimeLoop();
     const tick = () => {
-      this.notifyTime(this.currentTimeMs);
+      const timeMs = this.currentTimeMs;
+      // Apply the volume envelope for the current playback position every frame.
+      // Imperative .value keeps gain in sync with <audio> regardless of seek/pause.
+      if (this.gainNode) this.gainNode.gain.value = gainAtTime(this.automation, timeMs);
+      this.notifyTime(timeMs);
       if (this.isPlaying) this.rafId = requestAnimationFrame(tick);
     };
     this.rafId = requestAnimationFrame(tick);

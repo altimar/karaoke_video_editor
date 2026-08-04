@@ -136,57 +136,6 @@ button.danger {
 }
 
 /* ---------- Track switcher ---------- */
-.track-bar {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  align-items: center;
-  margin-bottom: 10px;
-}
-.track-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  font-size: 12px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-.track-tab:hover {
-  color: var(--text);
-}
-.track-tab.active {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.track-tab-del {
-  font-weight: 700;
-  line-height: 1;
-  padding: 0 2px;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-.track-tab-del:hover {
-  color: var(--danger);
-}
-.track-add {
-  padding: 4px 10px;
-  font-size: 14px;
-  line-height: 1;
-  background: var(--bg-input);
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-.track-add:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
 /* ---------- Inputs ---------- */
 label.field {
   display: block;
@@ -381,23 +330,28 @@ textarea.lyrics {
   /* Keep headers aligned with the canvas border/padding. */
   padding: 1px;
 }
-/* Spacer that lines the headers up below the ruler (mirrors RULER_H + TOP_PAD). */
+/* Spacer that lines the headers up below the ruler; holds the "add track" button. */
 .timeline-gutter-ruler {
   height: 30px;
   flex: 0 0 auto;
-}
-/* Waveform header ("минус") — height mirrors WAVE_H + TOP_PAD on the canvas. */
-.timeline-wave-head {
-  height: 48px;
-  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  padding: 0 8px;
+  margin-bottom: 4px;
+}
+/* "Add text track" button in the gutter, above the track headers. */
+.timeline-add-track {
+  width: 100%;
+  padding: 5px 6px;
   font-size: 11px;
-  color: var(--text-dim);
   background: var(--bg-input);
-  border: 1px solid var(--border);
+  border: 1px dashed var(--border);
   border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.timeline-add-track:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 /* One header per track — height mirrors ROW_H + TRACK_PAD on the canvas. */
 .timeline-track-head {

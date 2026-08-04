@@ -22,7 +22,7 @@
  * don't create feedback loops).
  */
 import { store } from '../state/store';
-import { BgType, Background, Project, TextTrack, TextStyle, getActiveTrack } from '../types';
+import { BgType, Background, Project, TextTrack, TextStyle, getActiveTrack, getActiveTextTrack } from '../types';
 import { invalidateBgImageCache } from '../lib/render';
 import { getRenderer, RENDERER_LIST } from '../lib/text_renderers/registry';
 import { RenderSettingSpec } from '../lib/text_renderers/types';
@@ -257,9 +257,12 @@ export function createStylePanel(): { root: HTMLElement } {
   let lastActiveTrackId: string | null = null;
   let lastLayout: string | null = null;
 
-  /** Mutate the active track's text style. */
+  /** Mutate the active text track's style. No-op when an audio track is active. */
   function mutateStyle(fn: (s: TextStyle) => void): void {
-    store.mutate((p) => fn(getActiveTrack(p).style));
+    store.mutate((p) => {
+      const t = getActiveTextTrack(p);
+      if (t) fn(t.style);
+    });
   }
   /** Mutate the shared background. */
   function mutateBg(fn: (b: Background) => void): void {
@@ -315,7 +318,8 @@ export function createStylePanel(): { root: HTMLElement } {
   }
 
   /** Ensure the settings object exists on the track, then set one key. */
-  function setSetting(track: TextTrack, rendererId: string, key: string, value: number | boolean): void {
+  function setSetting(track: { type: string; rendererSettings?: Record<string, Record<string, number | boolean>> }, rendererId: string, key: string, value: number | boolean): void {
+    if (track.type !== 'text') return;
     if (!track.rendererSettings) track.rendererSettings = {};
     if (!track.rendererSettings[rendererId]) track.rendererSettings[rendererId] = {};
     track.rendererSettings[rendererId][key] = value;
@@ -424,7 +428,7 @@ export function createStylePanel(): { root: HTMLElement } {
     trackFields = [];
     trackHost.innerHTML = '';
     const header = el('div', { className: 'card' });
-    header.appendChild(el('h2', { text: 'Текстовая дорожка' }));
+    header.appendChild(el('h2', { text: track.type === 'audio' ? 'Аудиодорожка' : 'Текстовая дорожка' }));
     const nameLab = el('label', { className: 'field' });
     nameLab.appendChild(el('span', { text: 'Название дорожки' }));
     const nameInput = el('input') as HTMLInputElement;
@@ -444,9 +448,13 @@ export function createStylePanel(): { root: HTMLElement } {
     header.appendChild(nameLab);
     trackHost.appendChild(header);
 
-    trackHost.appendChild(buildBase(track.style));
-    trackHost.appendChild(buildStroke(track.style));
-    trackHost.appendChild(buildLayout(track));
+    // Text-specific cards only when a text track is active. Audio tracks have
+    // no text settings yet — hide the per-track panels.
+    if (track.type === 'text') {
+      trackHost.appendChild(buildBase(track.style));
+      trackHost.appendChild(buildStroke(track.style));
+      trackHost.appendChild(buildLayout(track));
+    }
     lastActiveTrackId = project.activeTrackId;
   }
 
@@ -508,25 +516,6 @@ export function createStylePanel(): { root: HTMLElement } {
     const fps = numberField('FPS', project.fps, 15, 60, 1, (v) => store.mutate((pr) => (pr.fps = Math.round(v))));
     projFields.push({ get: (pr) => pr.fps, field: fps as Field<unknown> });
     layoutCardEl.appendChild(fps.root);
-
-    // Waveform visibility toggle (UI-only setting, lives on the project).
-    const waveLab = el('label', { className: 'field' });
-    waveLab.appendChild(el('span', { text: 'Волна на таймлайне' }));
-    const waveCb = el('input') as HTMLInputElement;
-    waveCb.type = 'checkbox';
-    waveCb.checked = project.showWaveform;
-    waveCb.addEventListener('change', () => store.mutate((pr) => (pr.showWaveform = waveCb.checked)));
-    waveLab.appendChild(waveCb);
-    projFields.push({
-      get: (pr) => pr.showWaveform,
-      field: {
-        root: waveLab,
-        set: (v) => {
-          if (waveCb.checked !== v) waveCb.checked = Boolean(v);
-        },
-      },
-    });
-    layoutCardEl.appendChild(waveLab);
   }
 
   function rebuildProjectCards(): void {
@@ -540,15 +529,19 @@ export function createStylePanel(): { root: HTMLElement } {
   function syncFromStore(): void {
     const project = store.getProject();
     const track = getActiveTrack(project);
-    const s = track.style;
+    const isText = track.type === 'text';
+    // Layout trigger applies to text tracks only (audio tracks have no layout).
+    const layoutKey = isText ? track.style.layout : '';
+    const needRebuild = project.activeTrackId !== lastActiveTrackId || layoutKey !== lastLayout;
 
     // Per-track cards: rebuild ONLY when the active track or the layout mode
     // changes, so dragging a slider within a track doesn't tear down the panel.
-    if (project.activeTrackId !== lastActiveTrackId || s.layout !== lastLayout) {
+    if (needRebuild) {
       rebuildTrackCards();
-    } else {
-      // Sync every per-track field's value in place.
-      for (const { get, field } of trackFields) field.set(get(s, track));
+    } else if (isText) {
+      // Sync every per-track field's value in place (text track only).
+      const tt = track;
+      for (const { get, field } of trackFields) field.set(get(tt.style, tt));
     }
 
     // Background card: rebuild ONLY when bg type flips.
@@ -557,7 +550,7 @@ export function createStylePanel(): { root: HTMLElement } {
       lastBgType = project.background.bgType;
     }
 
-    // Project-level fields (bg colors, resolution, fps, waveform).
+    // Project-level fields (bg colors, resolution, fps).
     for (const { get, field } of projFields) field.set(get(project));
   }
 

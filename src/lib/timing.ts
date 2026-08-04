@@ -16,7 +16,7 @@
 import { store } from '../state/store';
 import { audioEngine } from './audioEngine';
 import { flatSyllables } from './textParser';
-import { getActiveTrack } from '../types';
+import { getActiveTextTrack } from '../types';
 
 export type RecordStateListener = (recording: boolean, currentIndex: number) => void;
 
@@ -48,12 +48,16 @@ class TimingCapture {
    */
   start(fromIndex?: number): void {
     const project = store.getProject();
-    const flat = flatSyllables(getActiveTrack(project).lines);
+    const activeText = getActiveTextTrack(project);
+    if (!activeText) return; // only text tracks can be recorded
+    const flat = flatSyllables(activeText.lines);
     if (flat.length === 0) return;
 
     if (fromIndex !== undefined) {
       store.mutate((p) => {
-        const f = flatSyllables(getActiveTrack(p).lines);
+        const t = getActiveTextTrack(p);
+        if (!t) return;
+        const f = flatSyllables(t.lines);
         for (let i = fromIndex; i < f.length; i++) {
           f[i].syl.startMs = null;
         }
@@ -82,13 +86,17 @@ class TimingCapture {
     if (!this.recording) return;
     const timeMs = audioEngine.currentTimeMs;
     const project = store.getProject();
-    const flat = flatSyllables(getActiveTrack(project).lines);
+    const activeText = getActiveTextTrack(project);
+    if (!activeText) return;
+    const flat = flatSyllables(activeText.lines);
     if (this.cursor >= flat.length) {
       this.stop();
       return;
     }
     store.mutate((p) => {
-      const f = flatSyllables(getActiveTrack(p).lines);
+      const t = getActiveTextTrack(p);
+      if (!t) return;
+      const f = flatSyllables(t.lines);
       if (f[this.cursor]) f[this.cursor].syl.startMs = Math.round(timeMs);
     });
     this.cursor++;

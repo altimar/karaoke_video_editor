@@ -1,7 +1,7 @@
 /**
  * Transport & top-level controls: audio load, play/pause, record timings,
- * export MP4, save/load project JSON. Most actions emit toasts so the user
- * gets clear feedback.
+ * export, save/load project (.karaokeproject). Most actions emit toasts so the
+ * user gets clear feedback.
  */
 import { store } from '../state/store';
 import { audioEngine } from '../lib/audioEngine';
@@ -10,8 +10,9 @@ import { exportToMp4, downloadBlob, canExport, ExportCanceledError } from '../li
 import { invalidateBgImageCache } from '../lib/render';
 import { exportToKfn, collectKfnWarnings } from '../lib/kfnExport';
 import { importFromKfn } from '../lib/kfnImport';
+import { saveProject, loadProject } from '../lib/projectFile';
 import { openExportDialog } from './exportDialog';
-import { Project } from '../types';
+import { createAudioTrack, getAudioTracks } from '../types';
 
 export type ToastFn = (msg: string, kind?: 'ok' | 'err' | 'info') => void;
 
@@ -46,6 +47,10 @@ export function createTopbar(toast: ToastFn): {
       store.mutate((p) => {
         p.audioFileName = f.name;
         p.durationMs = audioEngine.durationMs;
+        // Create an audio track if the project doesn't have one yet.
+        if (getAudioTracks(p).length === 0) {
+          p.tracks.push(createAudioTrack('минус', f.name));
+        }
       });
       toast(`Загружено: ${f.name}`, 'ok');
       refreshAll();
@@ -81,12 +86,18 @@ export function createTopbar(toast: ToastFn): {
   });
   root.appendChild(recBtn);
 
-  // --- Save / load project ---
+  // --- Save / load project (.karaokeproject — a ZIP container) ---
   const saveBtn = document.createElement('button');
   saveBtn.textContent = '💾 Сохранить проект';
   saveBtn.addEventListener('click', () => {
-    const data = JSON.stringify(store.getProject(), null, 2);
-    downloadBlob(new Blob([data], { type: 'application/json' }), 'karaoke-project.json');
+    try {
+      const { blob, filename } = saveProject(store.getProject(), audioBytes);
+      downloadBlob(blob, filename);
+      toast('Проект сохранён', 'ok');
+    } catch (err) {
+      console.error(err);
+      toast('Ошибка сохранения: ' + (err instanceof Error ? err.message : String(err)), 'err');
+    }
   });
   root.appendChild(saveBtn);
 
@@ -94,20 +105,27 @@ export function createTopbar(toast: ToastFn): {
   loadBtn.textContent = '📂 Открыть проект';
   const projInput = document.createElement('input');
   projInput.type = 'file';
-  projInput.accept = '.json,application/json';
+  projInput.accept = '.karaokeproject';
   projInput.style.display = 'none';
   loadBtn.addEventListener('click', () => projInput.click());
   projInput.addEventListener('change', async () => {
     const f = projInput.files?.[0];
     if (!f) return;
     try {
-      const text = await f.text();
-      const project = JSON.parse(text) as Project;
-      store.setProject(project);
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      const result = loadProject(bytes);
+      // Load audio first (so duration is known), then apply the project.
+      if (result.audioBytes && result.audioFileName) {
+        await audioEngine.loadBytes(result.audioBytes, result.audioFileName);
+        audioBytes = result.audioBytes;
+      }
+      store.setProject(result.project);
+      invalidateBgImageCache();
       toast('Проект загружен', 'ok');
       refreshAll();
-    } catch {
-      toast('Не удалось прочитать проект', 'err');
+    } catch (err) {
+      console.error(err);
+      toast('Не удалось прочитать проект: ' + (err instanceof Error ? err.message : String(err)), 'err');
     }
   });
   root.appendChild(loadBtn);

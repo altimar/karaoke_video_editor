@@ -99,7 +99,9 @@ export function renderFrame(ctx: RenderCtx, timeMs: number, project: Project): v
   drawBackground(ctx, project, bg, bgImg);
 
   // 2. Render each text track independently, on top of the background.
+  //    Audio tracks have no visual representation in the frame — skip them.
   for (const track of project.tracks) {
+    if (track.type !== 'text') continue;
     const timings = buildTimings(track.lines, project.durationMs);
     if (timings.length === 0) continue;
 

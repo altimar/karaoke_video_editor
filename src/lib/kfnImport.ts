@@ -15,10 +15,10 @@
  * Timings within one effect are a flat sequence (Sync0..SyncN chunks), but they
  * are LOCAL to that effect — each effect has its own independent Sync array.
  */
-import { Line, Syllable, TextStyle, TextTrack, newTrackId, RendererSettings, Background, createBackground } from '../types';
+import { Line, Syllable, TextStyle, TextTrack, Track, newTrackId, RendererSettings, Background, createBackground, createAudioTrack } from '../types';
 
 export interface KfnImportResult {
-  project: { tracks: TextTrack[]; audioFileName: string; background: Background };
+  project: { tracks: Track[]; audioFileName: string; background: Background };
   audioBytes: Uint8Array;
 }
 
@@ -336,6 +336,7 @@ function effectToTrack(effect: EffectFields, index: number): TextTrack {
   return {
     id: newTrackId(),
     name,
+    type: 'text',
     lines,
     style,
     rendererSettings,
@@ -350,11 +351,13 @@ function effectToTrack(effect: EffectFields, index: number): TextTrack {
 export function importFromKfn(data: Uint8Array): KfnImportResult {
   const parsed = parseKfn(data);
   const effects = parseEffects(parsed.songIni);
-  const tracks = effects
+  const textTracks = effects
     .map((eff, i) => effectToTrack(eff, i))
     // Drop tracks with no syllables at all (empty placeholder effects).
     .filter((t) => t.lines.some((l) => l.syllables.length > 0));
-  if (tracks.length === 0) throw new Error('В KFN не найдено текстовых дорожек');
+  if (textTracks.length === 0) throw new Error('В KFN не найдено текстовых дорожек');
+  // The embedded audio becomes an audio track (holds automation; bytes stay out).
+  const tracks: Track[] = [...textTracks, createAudioTrack('минус', parsed.audioName)];
   // Background image (optional): extracted from an ID=51 effect + container file.
   const background = extractBackground(parsed.songIni, parsed.entries, data) ?? createBackground();
   return {

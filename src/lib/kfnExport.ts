@@ -13,6 +13,7 @@
  * against real .kfn sample files.
  */
 import { Project, TextTrack } from '../types';
+import { getTextTracks } from '../types';
 import { ExportCanceledError } from './exportErrors';
 
 /** Max outline thickness KaraFun Studio supports (Frame0..Frame5). */
@@ -27,13 +28,14 @@ const KFN_MAX_FRAME = 5;
  */
 export function collectKfnWarnings(project: Project): string[] {
   const warnings: string[] = [];
-  if (project.tracks.length > 2) {
+  const textTracks = getTextTracks(project);
+  if (textTracks.length > 2) {
     warnings.push(
-      `В проекте ${project.tracks.length} дорожек, а KaraFun поддерживает максимум 2 текстовых эффекта. ` +
+      `В проекте ${textTracks.length} текстовых дорожек, а KaraFun поддерживает максимум 2 текстовых эффекта. ` +
         `Лишние дорожки экспортированы, но KaraFun может их не показать.`,
     );
   }
-  for (const track of project.tracks) {
+  for (const track of textTracks) {
     if (track.style.layout !== 'scroller' && track.style.layout !== 'classic') {
       warnings.push(
         `Дорожка «${track.name}»: режим «${track.style.layout}» не поддерживается KaraFun, ` +
@@ -443,8 +445,9 @@ export async function exportToKfn(
   const title = audioFileName.replace(/\.[^.]+$/, '').replace(/[_]/g, ' ');
   const source = `1,I,${audioFileName}`;
 
-  if (project.tracks.length === 0) {
-    throw new Error('В проекте нет дорожек для экспорта');
+  const textTracks = getTextTracks(project);
+  if (textTracks.length === 0) {
+    throw new Error('В проекте нет текстовых дорожек для экспорта');
   }
   report(0.02);
 
@@ -454,7 +457,7 @@ export async function exportToKfn(
   if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
     bgImageFileName = 'background.' + (project.background.bgImageDataUrl.match(/data:image\/([a-z0-9]+);/i)?.[1] ?? 'jpg');
   }
-  const { ini: songIni, warnings } = buildSongIni(project, project.tracks, audioFileName, bgImageFileName);
+  const { ini: songIni, warnings } = buildSongIni(project, textTracks, audioFileName, bgImageFileName);
   const songIniBytes = new TextEncoder().encode(songIni);
   report(0.1);
   await yield_();

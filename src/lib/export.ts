@@ -17,8 +17,9 @@ import {
   AudioBufferSource,
   Quality,
 } from 'mediabunny';
-import { Project, TextTrack } from '../types';
+import { Project, TextTrack, Track, VolumePoint } from '../types';
 import { renderFrame } from './render';
+import { getActiveAudioTrack } from '../types';
 
 /**
  * Build a copy of the project scaled to the target resolution, multiplying all
@@ -31,16 +32,58 @@ import { renderFrame } from './render';
 function scaledProject(project: Project, targetW: number, targetH: number): Project {
   const scale = targetH / project.height;
   if (scale === 1) return project; // no scaling needed at native resolution
-  const tracks: TextTrack[] = project.tracks.map((t) => ({
-    ...t,
-    style: {
-      ...t.style,
-      fontSize: t.style.fontSize * scale,
-      strokeWidth: t.style.strokeWidth * scale,
-      glowBlur: t.style.glowBlur * scale,
-    },
-  }));
+  // Scale pixel-based style values of TEXT tracks only; audio tracks pass through.
+  const tracks: Track[] = project.tracks.map((t) => {
+    if (t.type !== 'text') return t;
+    const text: TextTrack = {
+      ...t,
+      style: {
+        ...t.style,
+        fontSize: t.style.fontSize * scale,
+        strokeWidth: t.style.strokeWidth * scale,
+        glowBlur: t.style.glowBlur * scale,
+      },
+    };
+    return text;
+  });
   return { ...project, width: targetW, height: targetH, tracks };
+}
+
+/**
+ * Render an AudioBuffer with a volume-automation envelope applied, producing a
+ * NEW AudioBuffer (the source is never mutated). Uses OfflineAudioContext so the
+ * gain curve is baked in during an offline render — identical to how the live
+ * GainNode would shape playback. Returns the original buffer unchanged when
+ * there are no automation points (flat gain 1.0).
+ */
+export async function renderAudioWithGain(
+  buffer: AudioBuffer,
+  points: VolumePoint[],
+): Promise<AudioBuffer> {
+  if (points.length === 0) return buffer; // nothing to do
+  const Ctor = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
+  const ctx = new Ctor(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  const gain = ctx.createGain();
+  // Program the envelope in the offline timeline (starts at 0s).
+  const g = gain.gain;
+  if (points.length === 1) {
+    g.setValueAtTime(points[0].gain, 0);
+  } else {
+    g.setValueAtTime(points[0].gain, 0);
+    for (let i = 1; i < points.length; i++) {
+      g.linearRampToValueAtTime(points[i].gain, points[i].timeMs / 1000);
+    }
+  }
+  // Hold the last value to the end.
+  const last = points[points.length - 1];
+  g.setValueAtTime(last.gain, buffer.duration);
+  src.connect(gain);
+  gain.connect(ctx.destination);
+  src.start(0);
+  const rendered = await ctx.startRendering();
+  return rendered;
 }
 
 export type ProgressFn = (fraction: number) => void;
@@ -194,8 +237,11 @@ export async function exportToMp4(
     }
 
     checkCanceled();
-    // Feed the entire song audio; AudioBufferSource timestamps it starting at 0.
-    await audioSource.add(audioBuffer);
+    // Apply volume automation (if any) via an offline render, then feed the
+    // whole song audio; AudioBufferSource timestamps it starting at 0.
+    const audioTrack = getActiveAudioTrack(project);
+    const finalAudio = await renderAudioWithGain(audioBuffer, audioTrack?.volumeAutomation ?? []);
+    await audioSource.add(finalAudio);
 
     checkCanceled();
     await output.finalize();

@@ -9,9 +9,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-render.mjs && node scripts/test-parser.mjs && node scripts/test-export-quality.mjs && node scripts/test-slider-drag.mjs && node scripts/test-waveform.mjs && node scripts/test-kfn.mjs && node scripts/test-syllabify.mjs"
+    "test": "node scripts/test-render.mjs && node scripts/test-parser.mjs && node scripts/test-export-quality.mjs && node scripts/test-slider-drag.mjs && node scripts/test-waveform.mjs && node scripts/test-kfn.mjs && node scripts/test-syllabify.mjs && node scripts/test-project.mjs && node scripts/test-volume.mjs"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "mediabunny": "^1.52.2"
   },
   "devDependencies": {

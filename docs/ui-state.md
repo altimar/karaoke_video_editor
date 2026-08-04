@@ -5,19 +5,21 @@
 Мини-реактивный стор — единственный источник истины:
 - `getProject()` — текущий проект.
 - `mutate(fn)` — изменить проект in-place, уведомить подписчиков.
-- `setProject(p)` — заменить проект (загрузка); прогоняет `migrateProject` для совместимости со старым форматом.
+- `setProject(p)` — заменить проект (загрузка); клонирует.
 - `subscribe(fn)` — подписка на изменения.
 
 Все UI-компоненты подписаны на store и обновляются при любом изменении.
 
 ## Модель: дорожки
 
-Проект содержит массив **текстовых дорожек** (`Project.tracks: TextTrack[]`). Каждая дорожка независима: свой текст (`lines`), свой текстовый стиль (`TextStyle`), свои настройки рендерера (`rendererSettings`). Общий фон (`Background`), разрешение, FPS и waveform живут на уровне проекта. Ровно одна дорожка активна (`Project.activeTrackId`).
+Проект содержит массив дорожек разных типов (`Project.tracks: Track[]`). `Track` — дискриминированный union с полем `type`: текстовые (`TextTrack`: `lines`, `style`, `rendererSettings`) и аудио (`AudioTrack`: `audioFileName`, `volumeAutomation`). Ровно одна дорожка активна (`Project.activeTrackId`) — любого типа. Общий фон (`Background`), разрешение и FPS живут на уровне проекта.
 
 Хелперы (`src/types.ts`):
-- `getActiveTrack(project)` — активная дорожка (фолбэк на `tracks[0]`, если id устарел).
-- `createTextTrack(name, lines?)` — новая дорожка с дефолтным стилем и уникальным id.
-- `migrateProject(p)` (в store) — старый формат (`lines`+`style`+`rendererSettings`) → одна дорожка + background. Вызывается автоматически при `setProject`.
+- `getActiveTrack(project)` — активная дорожка (любого типа; фолбэк на `tracks[0]`).
+- `getActiveTextTrack(project)` — активная текстовая дорожка или `null` (для text-only потребителей).
+- `getActiveAudioTrack(project)` — активная/первая аудиодорожка или `null`.
+- `getTextTracks(project)` / `getAudioTracks(project)` — фильтр по типу.
+- `createTextTrack(name, lines?)` / `createAudioTrack(name, audioFileName)` — фабрики дорожек.
 
 ## Критичный паттерн: «построил один раз — обновляю in-place»
 
@@ -46,4 +48,4 @@ Per-track цвета (заливка, обводка, свечение) испо
 
 ## Save/Load
 
-Проект сериализуется в JSON (дорожки со своим текстом/стилем/таймингами + общий фон + настройки). Аудио и фоновая картинка (dataURL) включаются. При загрузке `setProject` прогоняет `migrateProject`, который приводит старый формат (один `lines`+`style`) к модели с одной дорожкой — старые файлы остаются совместимы.
+Проект сериализуется в файл `.karaokeproject` (ZIP-контейнер: `project.json` + медиа, см. `docs/export.md`). Аудио и фоновая картинка хранятся как отдельные записи контейнера. При загрузке `setProject` клонирует проект.

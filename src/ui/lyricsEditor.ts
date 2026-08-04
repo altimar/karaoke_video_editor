@@ -15,7 +15,7 @@
 import { store } from '../state/store';
 import { parseLyrics, serializeLyrics, mergeTimings } from '../lib/textParser';
 import { syllabifyText } from '../lib/syllabification';
-import { createTextTrack, getActiveTrack } from '../types';
+import { getActiveTextTrack } from '../types';
 
 export function createLyricsEditor(): { root: HTMLElement } {
   const root = document.createElement('div');
@@ -26,11 +26,6 @@ export function createLyricsEditor(): { root: HTMLElement } {
   h2.textContent = 'Текст песни';
   card.appendChild(h2);
 
-  // --- Track switcher: one tab per track + add/remove ---
-  const trackBar = document.createElement('div');
-  trackBar.className = 'track-bar';
-  card.appendChild(trackBar);
-
   const hint = document.createElement('div');
   hint.className = 'hint';
   hint.innerHTML = 'Слоги делятся по пробелам и <kbd>/</kbd>, строки — переносами. Знаки препинания и другие символы остаются при словах. Можно вставить текст целиком — слова разобьются сами. Чтобы разбить слово внутри, используйте <kbd>/</kbd>: <kbd>Ка/ра/о/ке</kbd>.';
@@ -39,7 +34,10 @@ export function createLyricsEditor(): { root: HTMLElement } {
   const ta = document.createElement('textarea');
   ta.className = 'lyrics';
   ta.spellcheck = false;
-  ta.value = serializeLyrics(getActiveTrack(store.getProject()).lines);
+  ta.value = (() => {
+    const t = getActiveTextTrack(store.getProject());
+    return t ? serializeLyrics(t.lines) : '';
+  })();
 
   // Track focus so external store updates (e.g. project/track load) don't clobber typing.
   let focused = false;
@@ -49,7 +47,8 @@ export function createLyricsEditor(): { root: HTMLElement } {
   ta.addEventListener('input', () => {
     const newLines = parseLyrics(ta.value);
     store.mutate((p) => {
-      const track = getActiveTrack(p);
+      const track = getActiveTextTrack(p);
+      if (!track) return; // only text tracks are edited here
       // Preserve existing timings by matching syllables by TEXT (not position),
       // so splitting a word ("Привет" → "При/вет") keeps timings of other
       // syllables and evenly distributes the split word's time slot.
@@ -86,76 +85,22 @@ export function createLyricsEditor(): { root: HTMLElement } {
 
   root.appendChild(card);
 
-  // --- Track switcher rendering ---
-  // Rebuilt only when the set of tracks or the active id changes (NOT on every
-  // text edit), so it stays cheap. Each tab shows the track name and, for the
-  // active one, a delete button.
-  let lastTrackSig = '';
-  function renderTrackBar(): void {
-    const project = store.getProject();
-    const sig = project.tracks.map((t) => `${t.id}:${t.name}`).join('|') + '@' + project.activeTrackId;
-    if (sig === lastTrackSig) return;
-    lastTrackSig = sig;
-    trackBar.innerHTML = '';
-    for (const track of project.tracks) {
-      const tab = document.createElement('button');
-      tab.className = 'track-tab' + (track.id === project.activeTrackId ? ' active' : '');
-      const label = document.createElement('span');
-      label.className = 'track-tab-name';
-      label.textContent = track.name;
-      tab.appendChild(label);
-      tab.title = 'Сделать эту дорожку активной';
-      tab.addEventListener('click', () => {
-        if (track.id === store.getProject().activeTrackId) return;
-        store.mutate((p) => (p.activeTrackId = track.id));
-      });
-      // Delete button on the active track (disabled if it's the only track).
-      if (track.id === project.activeTrackId && project.tracks.length > 1) {
-        const del = document.createElement('span');
-        del.className = 'track-tab-del';
-        del.textContent = '×';
-        del.title = 'Удалить дорожку';
-        del.addEventListener('click', (e) => {
-          e.stopPropagation();
-          if (project.tracks.length <= 1) return;
-          store.mutate((p) => {
-            const idx = p.tracks.findIndex((t) => t.id === track.id);
-            if (idx < 0) return;
-            p.tracks.splice(idx, 1);
-            // Pick a neighbor as the new active track.
-            const nextIdx = Math.min(idx, p.tracks.length - 1);
-            p.activeTrackId = p.tracks[nextIdx].id;
-          });
-        });
-        tab.appendChild(del);
-      }
-      trackBar.appendChild(tab);
-    }
-    // Add-track button.
-    const addBtn = document.createElement('button');
-    addBtn.className = 'track-add';
-    addBtn.textContent = '+';
-    addBtn.title = 'Добавить текстовую дорожку';
-    addBtn.addEventListener('click', () => {
-      store.mutate((p) => {
-        const t = createTextTrack(`Дорожка ${p.tracks.length + 1}`);
-        p.tracks.push(t);
-        p.activeTrackId = t.id;
-      });
-    });
-    trackBar.appendChild(addBtn);
-  }
-
-  // When the project/active track changes and the editor isn't focused, resync text.
+  // When the project/active track changes and the editor isn't focused, resync
+  // text, and show/hide the text body depending on the active track's type
+  // (audio tracks have no lyrics to edit). Track switching / adding / deleting
+  // lives in the timeline gutter now, not here.
   store.subscribe(() => {
-    renderTrackBar();
-    const activeLines = getActiveTrack(store.getProject()).lines;
+    const proj = store.getProject();
+    const activeText = getActiveTextTrack(proj);
+    const isText = !!activeText;
+    ta.hidden = !isText;
+    sylBtnRow.hidden = !isText;
+    if (!isText) return;
     if (!focused) {
-      const fresh = serializeLyrics(activeLines);
+      const fresh = serializeLyrics(activeText!.lines);
       if (fresh !== ta.value) ta.value = fresh;
     }
   });
 
-  renderTrackBar();
   return { root };
 }

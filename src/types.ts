@@ -82,27 +82,58 @@ export interface Background {
 export type RendererSettings = Record<string, Record<string, number | boolean>>;
 
 /**
- * One independent text track. Tracks hold their own lyrics, text style and
- * renderer settings. They render on top of the shared background, in array
- * order, and may overlap. Editing, timing capture and timeline dragging all
- * operate on the project's active track.
+ * Base for all track kinds. A `type` discriminator narrows to a concrete shape
+ * (text, audio, …). Tracks render/operate independently; exactly one is active
+ * at a time (editing, recording, timeline dragging target it).
  */
-export interface TextTrack {
+export interface BaseTrack {
   /** Stable unique id (used to identify the active track and in save/load). */
   id: string;
   /** Human-readable name shown in the track switcher. */
   name: string;
+  /** Discriminator — narrows this BaseTrack to a concrete track kind. */
+  type: 'text' | 'audio';
+}
+
+/**
+ * One independent text track. Holds its own lyrics, text style and renderer
+ * settings. Renders on top of the shared background, in array order, and may
+ * overlap with other text tracks. Editing, timing capture and timeline dragging
+ * operate on the project's active track (when it is a text track).
+ */
+export interface TextTrack extends BaseTrack {
+  type: 'text';
   lines: Line[];
   style: TextStyle;
   /** Per-renderer settings (visibleLines for scroller, etc.). Merged with defaults. */
   rendererSettings: RendererSettings;
 }
 
+/**
+ * One independent audio track. Holds the reference to its source audio file and
+ * the volume-automation envelope. Audio bytes themselves are kept OUTSIDE the
+ * project (in the audio engine / controls) so the model stays light; the track
+ * stores the filename + automation only. Does not render to the video frame.
+ */
+export interface AudioTrack extends BaseTrack {
+  type: 'audio';
+  /** Source audio filename (matches the bytes loaded into the audio engine). */
+  audioFileName: string;
+  /**
+   * Volume automation points: time in ms + linear gain (0 = mute, 1 = original,
+   * 2 = double). Sorted by timeMs; empty = no automation (flat gain 1.0).
+   */
+  volumeAutomation: VolumePoint[];
+}
+
+/** Any track kind (text, audio, …). Narrow via the `type` discriminator. */
+export type Track = TextTrack | AudioTrack;
+
 export interface Project {
   audioFileName: string | null;
   durationMs: number;
-  /** One or more independent text tracks. */
-  tracks: TextTrack[];
+  /** All tracks (text, audio, …), in display order. */
+  tracks: Track[];
   /** Id of the track currently targeted by editing/recording/timeline. */
   activeTrackId: string;
   /** Shared background, drawn behind every track. */
@@ -110,8 +141,12 @@ export interface Project {
   fps: number;
   width: number;
   height: number;
-  /** Whether the waveform track is shown above the timeline. UI-only setting. */
-  showWaveform: boolean;
+}
+
+/** One point on the volume automation envelope. */
+export interface VolumePoint {
+  timeMs: number;
+  gain: number;
 }
 
 /** Default text style used when a new track is created. */
@@ -171,18 +206,63 @@ export function createTextTrack(name: string, lines?: Line[]): TextTrack {
   return {
     id: newTrackId(),
     name,
+    type: 'text',
     lines: lines ?? [{ syllables: [{ text: 'Загрузите текст', startMs: null }] }],
     style: createTextStyle(),
     rendererSettings: defaultRendererSettings(),
   };
 }
 
+/** Create a new audio track with no automation (flat gain 1.0). */
+export function createAudioTrack(name: string, audioFileName: string): AudioTrack {
+  return {
+    id: newTrackId(),
+    name,
+    type: 'audio',
+    audioFileName,
+    volumeAutomation: [],
+  };
+}
+
 /**
- * The track currently targeted by editing, timing capture and timeline dragging.
+ * The track currently targeted by editing/recording/timeline (any type).
  * Falls back to the first track if the active id is stale (e.g. after a delete).
  */
-export function getActiveTrack(project: Project): TextTrack {
+export function getActiveTrack(project: Project): Track {
   return project.tracks.find((t) => t.id === project.activeTrackId) ?? project.tracks[0];
+}
+
+/** All text tracks (in display order). */
+export function getTextTracks(project: Project): TextTrack[] {
+  return project.tracks.filter((t): t is TextTrack => t.type === 'text');
+}
+
+/** All audio tracks (in display order). */
+export function getAudioTracks(project: Project): AudioTrack[] {
+  return project.tracks.filter((t): t is AudioTrack => t.type === 'audio');
+}
+
+/**
+ * The active track IF it is a text track, else null. For text-only consumers
+ * (lyrics editor, timing capture, style panel) that have nothing to do when an
+ * audio track is active.
+ */
+export function getActiveTextTrack(project: Project): TextTrack | null {
+  const t = getActiveTrack(project);
+  return t.type === 'text' ? t : null;
+}
+
+/** The active audio track, else the first audio track, else null. */
+export function getActiveAudioTrack(project: Project): AudioTrack | null {
+  const t = getActiveTrack(project);
+  if (t.type === 'audio') return t;
+  return getAudioTracks(project)[0] ?? null;
+}
+
+/** Look up a text track by id; null if missing or not a text track. */
+export function getTextTrack(project: Project, id: string): TextTrack | null {
+  const t = project.tracks.find((tr) => tr.id === id);
+  return t && t.type === 'text' ? t : null;
 }
 
 /** Default project used on first load. */
@@ -197,6 +277,5 @@ export function createDefaultProject(): Project {
     fps: 30,
     width: 1920,
     height: 1080,
-    showWaveform: true,
   };
 }
