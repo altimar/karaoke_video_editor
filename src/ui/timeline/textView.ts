@@ -17,10 +17,15 @@ export const textView: TrackView<TextTrack> = {
 
   draw(ctx: Ctx, track: TextTrack, rowY: number, env: TimelineEnv): void {
     const flat = flatSyllables(track.lines);
+    // Visible content window (with a little slack); skip syllables entirely
+    // off-screen so we don't build gradients/labels for them every frame.
+    const left = env.scrollLeft - 40;
+    const right = env.scrollLeft + env.viewportWidth + 40;
     for (let i = 0; i < flat.length; i++) {
       const { lineIndex, sylIndex, syl } = flat[i];
       if (syl.startMs === null) continue;
       const mx = env.msToX(syl.startMs);
+      if (mx < left || mx > right) continue;
 
       // syllable text label
       ctx.fillStyle = '#7a7f9e';

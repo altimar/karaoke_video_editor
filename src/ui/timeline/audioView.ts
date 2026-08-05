@@ -23,10 +23,15 @@ export const audioView: TrackView<AudioTrack> = {
     // Waveform peaks (mirrored) for THIS role's audio, if loaded.
     const buf = audioEngine.getBuffer(track.role);
     if (buf) {
+      // Peaks are computed for the FULL content width (so zoom still adds
+      // detail and the per-bucket cache stays stable), but we only draw the
+      // visible window — O(viewport) fillRects per frame instead of O(content).
       const peaks = computePeaks(buf, Math.max(1, Math.ceil(env.width))).peaks;
       ctx.fillStyle = '#3a5a8c';
       const w = env.width;
-      for (let x = 0; x < w; x++) {
+      const x0 = Math.max(0, Math.floor(env.scrollLeft));
+      const x1 = Math.min(w, Math.ceil(env.scrollLeft + env.viewportWidth));
+      for (let x = x0; x < x1; x++) {
         const idx = Math.floor((x / w) * peaks.length);
         const p = peaks[idx] ?? 0;
         const half = Math.max(1, p * (AUDIO_ROW_H / 2 - 1));
@@ -41,9 +46,11 @@ export const audioView: TrackView<AudioTrack> = {
       ctx.fillText('загрузите аудио', env.width / 2, midY);
       ctx.textAlign = 'left';
     }
-    // Separator line under the row.
+    // Separator line under the row (only the visible slice).
     ctx.fillStyle = '#2a2e42';
-    ctx.fillRect(0, rowY + AUDIO_ROW_H, env.width, 1);
+    const sepX = Math.max(0, Math.floor(env.scrollLeft));
+    const sepW = Math.min(env.width, Math.ceil(env.scrollLeft + env.viewportWidth)) - sepX;
+    ctx.fillRect(sepX, rowY + AUDIO_ROW_H, Math.max(0, sepW), 1);
 
     // Volume automation envelope.
     drawEnvelope(ctx, track, rowY, env);

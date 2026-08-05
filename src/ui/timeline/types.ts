@@ -19,8 +19,16 @@ export interface TimelineEnv {
   xToMs: (x: number) => number;
   /** Song duration in ms (clamped to ≥1). */
   durationMs: () => number;
-  /** Canvas content width in px (at the current zoom). */
+  /** Canvas content width in px (at the current zoom). The full virtual width
+   *  the canvas represents; `msToX` maps into [0, width]. */
   width: number;
+  /** Left edge of the currently visible window, in content px (= scrollLeft).
+   *  Views draw in content space (0..width); this lets them cull anything
+   *  outside [scrollLeft, scrollLeft + viewportWidth]. */
+  scrollLeft: number;
+  /** Width of the visible window in px. Together with scrollLeft defines the
+   *  on-screen slice of content. */
+  viewportWidth: number;
 }
 
 /** A drag a track view claimed via hitTest — carried across pointermove. */

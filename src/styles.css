@@ -352,12 +352,27 @@ textarea.lyrics {
      container — and the whole page — to grow, breaking the layout. */
   min-width: 0;
 }
+/* Spacer that defines the scrollable width (= content width at the current
+   zoom). Its inline width is set from JS on every draw. The canvas inside is
+   sticky so it stays pinned to the viewport's left edge while the spacer
+   scrolls underneath — this is what lets the canvas be only viewport-wide (and
+   thus fit the backing-store limit) while the scroll container still scrolls
+   natively. */
+.timeline-canvas-wrap {
+  position: relative;
+  /* Height comes from the sticky canvas child. */
+}
 .timeline-canvas {
   display: block;
   cursor: pointer;
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 6px;
+  /* Pin to the left edge of the scroll viewport so the (narrow) canvas stays
+     fully on-screen as the (wide) spacer scrolls. The draw() offsets content
+     via ctx.translate(-scrollLeft). */
+  position: sticky;
+  left: 0;
 }
 /* Body: fixed left gutter (track headers) + scrollable canvas. Like an audio
    editor — the gutter never scrolls, the timeline does. */

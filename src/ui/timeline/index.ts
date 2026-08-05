@@ -71,10 +71,17 @@ export function createTimeline(): { root: HTMLElement } {
 
   const scroll = document.createElement('div');
   scroll.className = 'timeline-scroll';
+  // Spacer that defines the scrollable content width; the canvas is sticky
+  // inside it so it stays viewport-wide while the spacer scrolls underneath
+  // (see CSS .timeline-canvas-wrap / .timeline-canvas). This keeps the canvas
+  // backing store small (= viewport × dpr) regardless of zoom.
+  const wrap = document.createElement('div');
+  wrap.className = 'timeline-canvas-wrap';
   const canvas = document.createElement('canvas');
   canvas.className = 'timeline-canvas';
   const ctx = canvas.getContext('2d')!;
-  scroll.appendChild(canvas);
+  wrap.appendChild(canvas);
+  scroll.appendChild(wrap);
   body.appendChild(scroll);
 
   root.appendChild(body);
@@ -86,8 +93,11 @@ export function createTimeline(): { root: HTMLElement } {
   let recording = false;
   let recordCursor = 0;
 
-  const baseWidth = () => Math.max(800, scroll.clientWidth - 4);
-  const contentWidth = () => baseWidth() * zoom;
+  // Viewport width = the on-screen canvas. Content width = the full virtual
+  // timeline (viewport × zoom); the spacer is sized to it so the scroll
+  // container can pan, while the canvas itself stays viewport-wide.
+  const viewportWidth = () => Math.max(1, scroll.clientWidth - 4);
+  const contentWidth = () => viewportWidth() * zoom;
 
   function durationMs(p?: Project): number {
     const proj = p ?? store.getProject();
@@ -96,6 +106,12 @@ export function createTimeline(): { root: HTMLElement } {
 
   const msToX = (ms: number) => (ms / durationMs()) * contentWidth();
   const xToMs = (x: number) => (x / contentWidth()) * durationMs();
+
+  /** Convert a pointer's clientX to a CONTENT-space x. The canvas is sticky and
+   *  viewport-wide, so rect.left is the viewport's left edge; adding scrollLeft
+   *  maps it into the [0, contentWidth] space the views and msToX work in. */
+  const pointerContentX = (clientX: number): number =>
+    clientX - canvas.getBoundingClientRect().left + scroll.scrollLeft;
 
   /** Reflect the current zoom level in the header label (e.g. "230%"). */
   function updateZoomLabel(): void {
@@ -135,7 +151,7 @@ export function createTimeline(): { root: HTMLElement } {
   // fallback is a seek.
   canvas.addEventListener('pointerdown', (e) => {
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
     const project = store.getProject();
     const tracks = project.tracks;
@@ -179,7 +195,7 @@ export function createTimeline(): { root: HTMLElement } {
   // Double-click → delete a claimed object (e.g. a volume point).
   canvas.addEventListener('dblclick', (e) => {
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
     const project = store.getProject();
     const tracks = project.tracks;
@@ -203,7 +219,7 @@ export function createTimeline(): { root: HTMLElement } {
   canvas.addEventListener('pointermove', (e) => {
     if (!drag || isPinching) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
     const project = store.getProject();
     const tracks = project.tracks;
@@ -230,8 +246,7 @@ export function createTimeline(): { root: HTMLElement } {
     (e) => {
       if (!e.shiftKey) return;
       e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const anchorMs = xToMs(e.clientX - rect.left);
+      const anchorMs = xToMs(pointerContentX(e.clientX));
       zoomAt(anchorMs, e.deltaY < 0 ? 1.15 : 1 / 1.15);
     },
     { passive: false },
@@ -273,8 +288,9 @@ export function createTimeline(): { root: HTMLElement } {
       if (!isPinching || e.touches.length !== 2) return;
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      // Anchor at the midpoint between the two fingers (in ms).
-      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      // Anchor at the midpoint between the two fingers, in CONTENT space.
+      const midX =
+        (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left + scroll.scrollLeft;
       const anchorMs = xToMs(midX);
       const factor = pinchDistance(e.touches) / pinchStartDist;
       // Reset to the gesture's start zoom, then apply the accumulated factor
@@ -306,10 +322,35 @@ export function createTimeline(): { root: HTMLElement } {
     draw();
   });
 
+  // The canvas is viewport-wide and content is offset via translate(-scrollLeft),
+  // so native scrolling no longer moves the painted pixels — we must redraw on
+  // every scroll to keep the visible slice current. Throttle to one draw per
+  // animation frame (scroll can fire many times per gesture).
+  let drawScheduled = false;
+  function scheduleDraw(): void {
+    if (drawScheduled) return;
+    drawScheduled = true;
+    requestAnimationFrame(() => {
+      drawScheduled = false;
+      draw();
+    });
+  }
+  scroll.addEventListener('scroll', scheduleDraw, { passive: true });
+  // Repaint on viewport resize too (e.g. panel toggling, orientation change) —
+  // otherwise the canvas would keep its old size until the next store/audio event.
+  const ro = new ResizeObserver(() => scheduleDraw());
+  ro.observe(scroll);
+
   /** Build the shared env for the current frame. */
   function makeEnv(): TimelineEnv {
-    const cssW = contentWidth();
-    return { msToX, xToMs, durationMs, width: cssW };
+    return {
+      msToX,
+      xToMs,
+      durationMs,
+      width: contentWidth(),
+      scrollLeft: scroll.scrollLeft,
+      viewportWidth: scroll.clientWidth,
+    };
   }
 
   // --- Gutter (left headers) ---
@@ -448,23 +489,37 @@ export function createTimeline(): { root: HTMLElement } {
     let cssH = RULER_H + TOP_PAD;
     for (const t of tracks) cssH += rowHeight(t) + TRACK_PAD;
     cssH += 4;
-    const cssW = contentWidth();
-    if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
-      canvas.width = Math.round(cssW * dpr);
+    // The canvas is viewport-wide; the spacer carries the full content width so
+    // the scroll container can pan. canvas backing store scales only with the
+    // viewport (× dpr), never with zoom — so it can't exceed the device limit.
+    const vw = viewportWidth();
+    const cw = contentWidth();
+    wrap.style.width = `${cw}px`;
+    if (canvas.width !== Math.round(vw * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+      canvas.width = Math.round(vw * dpr);
       canvas.height = Math.round(cssH * dpr);
-      canvas.style.width = `${cssW}px`;
+      canvas.style.width = `${vw}px`;
       canvas.style.height = `${cssH}px`;
     }
+    // Draw in CSS pixels (dpr baked into the transform), then shift everything
+    // left by scrollLeft so the visible slice of content lands in the viewport.
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.clearRect(0, 0, vw, cssH);
+    ctx.translate(-scroll.scrollLeft, 0);
 
-    // Ruler ticks
+    // Visible content window — used to cull ruler ticks / active band fills.
+    const left = scroll.scrollLeft;
+    const right = scroll.scrollLeft + vw;
+
+    // Ruler ticks — iterate by ms (as before) but cull ticks off the visible
+    // window. A small left margin keeps labels of ticks just entering view.
     ctx.font = '11px system-ui';
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
-    const step = niceStepMs(durationMs(), cssW);
+    const step = niceStepMs(durationMs(), cw);
     for (let ms = 0; ms <= durationMs(); ms += step) {
       const x = msToX(ms);
+      if (x < left - 40 || x > right) continue;
       ctx.fillStyle = '#2a2e42';
       ctx.fillRect(x, 0, 1, RULER_H);
       ctx.fillStyle = '#9498b8';
@@ -479,10 +534,10 @@ export function createTimeline(): { root: HTMLElement } {
       const view = VIEWS[track.type];
       if (!view) continue;
       const rowY = trackTopForIndex(ti, tracks);
-      // Active track subtle highlight band.
+      // Active track subtle highlight band (only the visible slice).
       if (track.id === activeId) {
         ctx.fillStyle = 'rgba(255,225,77,0.06)';
-        ctx.fillRect(0, rowY - 2, cssW, rowHeight(track) + 4);
+        ctx.fillRect(Math.max(0, left), rowY - 2, Math.min(cw, right) - Math.max(0, left), rowHeight(track) + 4);
       }
       view.draw(ctx, track, rowY, env);
     }
