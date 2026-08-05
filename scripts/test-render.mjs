@@ -158,7 +158,7 @@ const project = {
         layout: 'scroller',
       },
       rendererSettings: {
-        scroller: { visibleLines: 8 },
+        scroller: { previewSec: 10 },
       },
       lines: [
         {
@@ -301,13 +301,14 @@ console.log('Renderer logic tests\n');
   assert(!texts.has('вет') && !texts.has(' мир'), 'untimed syllables NOT rendered');
 }
 
-// Test 10: 'scroller' layout draws the active line + nearby window only.
+// Test 10: 'scroller' layout draws the active line + upcoming lines within preview.
 {
   const { ctx, calls } = makeFakeCtx(40);
   // 6 lines, each with one timed syllable 1s apart; line 0 active at t=0.
   const p = JSON.parse(JSON.stringify(project));
   track(p).style.layout = 'scroller';
-  track(p).rendererSettings.scroller.visibleLines = 4;
+  // previewSec=2 → only lines within ~2s ahead are on the bottom half of screen.
+  track(p).rendererSettings.scroller.previewSec = 2;
   track(p).lines = Array.from({ length: 6 }, (_, i) => ({
     syllables: [{ text: `L${i}`, startMs: i * 1000 }],
   }));
@@ -315,16 +316,15 @@ console.log('Renderer logic tests\n');
   renderFrame(ctx, 100, p); // active line 0
   const texts = new Set(calls.filter((c) => c[0] === 'fillText').map((c) => c[1]));
   assert(texts.has('L0'), 'scroller shows active line L0');
-  // Lines far below the window (L5) should not be rendered when active is L0
-  // and only 4 lines fit — the window spans L0..L3 at most.
-  assert(!texts.has('L5'), 'scroller hides far-below line L5');
+  // L5 is 5s ahead — well beyond the 2s preview, off the bottom of the screen.
+  assert(!texts.has('L5'), 'scroller hides far-below line L5 (beyond previewSec)');
 }
 
 // Test 11: 'scroller' — constant speed + each line at CENTER at its anchor time.
 {
   const p = JSON.parse(JSON.stringify(project));
   track(p).style.layout = 'scroller';
-  track(p).rendererSettings.scroller.visibleLines = 8;
+  track(p).rendererSettings.scroller.previewSec = 10;
   // Evenly-spaced lines (0, 1000, 2000, ...) so speed is well-defined.
   track(p).lines = Array.from({ length: 10 }, (_, i) => ({ syllables: [{ text: `W${i}`, startMs: i * 1000, sep: '' }] }));
   p.durationMs = 12000;
@@ -352,20 +352,21 @@ console.log('Renderer logic tests\n');
   assert(speeds[0] > 0, 'text moves upward (speed > 0)');
 }
 
-// Test 12: 'scroller' shows ~N lines on screen — when lines are evenly timed
-// so the scroll pace matches the spacing.
+// Test 12: 'scroller' shows several lines on screen — the active line at center
+// plus upcoming lines below (within previewSec).
 {
   const p = JSON.parse(JSON.stringify(project));
   track(p).style.layout = 'scroller';
-  track(p).rendererSettings.scroller.visibleLines = 4;
-  // 10 lines evenly spaced so the global scroll speed matches the N=4 spacing.
+  track(p).rendererSettings.scroller.previewSec = 10;
+  // 10 lines 2s apart; at t=5000 the active line is X2 (start 4000).
   track(p).lines = Array.from({ length: 10 }, (_, i) => ({ syllables: [{ text: `X${i}`, startMs: i * 2000 }] }));
   p.durationMs = 22000;
   const rec = makeFakeCtx(40);
   renderFrame(rec.ctx, 5000, p); // mid-scroll
   const labels = new Set(rec.calls.filter((c) => c[0] === 'fillText').map((c) => c[1]));
-  // With visibleLines=4 and even timing, ~3-5 lines should be on screen.
-  assert(labels.size >= 3 && labels.size <= 6, `~4 lines visible for visibleLines=4 (got ${labels.size})`);
+  // The active line + past lines + a couple upcoming lines are on screen.
+  assert(labels.size >= 3, `several lines visible with previewSec=10 (got ${labels.size})`);
+  assert(labels.has('X2'), 'active line X2 visible');
 }
 
 // Test 13: 'scroller' fill starts at the CENTER — a line entering from the
@@ -373,7 +374,7 @@ console.log('Renderer logic tests\n');
 {
   const p = JSON.parse(JSON.stringify(project));
   track(p).style.layout = 'scroller';
-  track(p).rendererSettings.scroller.visibleLines = 4;
+  track(p).rendererSettings.scroller.previewSec = 10;
   track(p).lines = [
     { syllables: [{ text: 'A', startMs: 1000 }] },
     { syllables: [{ text: 'B', startMs: 2000 }] },
@@ -394,7 +395,7 @@ console.log('Renderer logic tests\n');
 {
   const p = JSON.parse(JSON.stringify(project));
   track(p).style.layout = 'scroller';
-  track(p).rendererSettings.scroller.visibleLines = 8;
+  track(p).rendererSettings.scroller.previewSec = 10;
   track(p).lines = [
     { syllables: [{ text: 'FIRST', startMs: 0 }] },
     { syllables: [{ text: 'SECOND', startMs: 1000 }] },
@@ -425,14 +426,14 @@ console.log('Renderer logic tests\n');
       id: 't1',
       type: 'text', name: 'Lead',
       style: { ...track(p).style },
-      rendererSettings: { scroller: { visibleLines: 4 } },
+      rendererSettings: { scroller: { previewSec: 10 } },
       lines: [{ syllables: [{ text: 'LEAD', startMs: 0 }] }],
     },
     {
       id: 't2',
       type: 'text', name: 'Backing',
       style: { ...track(p).style },
-      rendererSettings: { scroller: { visibleLines: 4 } },
+      rendererSettings: { scroller: { previewSec: 10 } },
       lines: [{ syllables: [{ text: 'BACK', startMs: 0 }] }],
     },
   ];

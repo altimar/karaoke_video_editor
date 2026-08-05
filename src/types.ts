@@ -114,10 +114,18 @@ export interface TextTrack extends BaseTrack {
  * the volume-automation envelope. Audio bytes themselves are kept OUTSIDE the
  * project (in the audio engine / controls) so the model stays light; the track
  * stores the filename + automation only. Does not render to the video frame.
+ *
+ * A project has three fixed audio roles: 'original' (reference, for timing
+ * capture), 'minus' (instrumental — mixed into the video export), 'back'
+ * (backing vocals — also mixed into the export). Roles can't be renamed.
  */
+export type AudioRole = 'original' | 'minus' | 'back';
+
 export interface AudioTrack extends BaseTrack {
   type: 'audio';
-  /** Source audio filename (matches the bytes loaded into the audio engine). */
+  /** Fixed role (original/minus/back). Names and playback semantics follow it. */
+  role: AudioRole;
+  /** Source audio filename; empty string = no audio loaded in this slot. */
   audioFileName: string;
   /**
    * Volume automation points: time in ms + linear gain (0 = mute, 1 = original,
@@ -130,7 +138,6 @@ export interface AudioTrack extends BaseTrack {
 export type Track = TextTrack | AudioTrack;
 
 export interface Project {
-  audioFileName: string | null;
   durationMs: number;
   /** All tracks (text, audio, …), in display order. */
   tracks: Track[];
@@ -192,7 +199,7 @@ export function newTrackId(): string {
 function defaultRendererSettings(): RendererSettings {
   // Must mirror the renderer defaults declared in text_renderers/*.ts.
   return {
-    scroller: { visibleLines: 8 },
+    scroller: { previewSec: 10 },
     classic: { lineSlots: 4, fadeMs: 1500, offsetX: 0, offsetY: 0 },
   };
 }
@@ -213,12 +220,20 @@ export function createTextTrack(name: string, lines?: Line[]): TextTrack {
   };
 }
 
-/** Create a new audio track with no automation (flat gain 1.0). */
-export function createAudioTrack(name: string, audioFileName: string): AudioTrack {
+/** Human-readable name for an audio role (also the track name; roles can't be renamed). */
+export const AUDIO_ROLE_NAMES: Record<AudioRole, string> = {
+  original: 'Оригинал',
+  minus: 'Минус',
+  back: 'Бэк',
+};
+
+/** Create a new audio track for a role with no audio loaded (flat gain 1.0). */
+export function createAudioTrack(role: AudioRole, audioFileName = ''): AudioTrack {
   return {
     id: newTrackId(),
-    name,
+    name: AUDIO_ROLE_NAMES[role],
     type: 'audio',
+    role,
     audioFileName,
     volumeAutomation: [],
   };
@@ -265,13 +280,22 @@ export function getTextTrack(project: Project, id: string): TextTrack | null {
   return t && t.type === 'text' ? t : null;
 }
 
-/** Default project used on first load. */
+/** The audio track for a role, or null if none. */
+export function getAudioTrackByRole(project: Project, role: AudioRole): AudioTrack | null {
+  return getAudioTracks(project).find((t) => t.role === role) ?? null;
+}
+
+/** Default project used on first load: one text track + the three fixed audio slots. */
 export function createDefaultProject(): Project {
   const track = createTextTrack('Дорожка 1');
+  const audio = [
+    createAudioTrack('original'),
+    createAudioTrack('minus'),
+    createAudioTrack('back'),
+  ];
   return {
-    audioFileName: null,
     durationMs: 0,
-    tracks: [track],
+    tracks: [track, ...audio],
     activeTrackId: track.id,
     background: createBackground(),
     fps: 30,

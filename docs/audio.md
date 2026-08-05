@@ -1,20 +1,31 @@
 # Аудио
 
-## AudioEngine (`src/lib/audioEngine.ts`)
+## Роли аудиодорожек
 
-Две ответственности:
+Проект содержит три фиксированные аудиодорожки (роли): **оригинал** (reference, для записи таймингов), **минус** (instrumental — микшируется в экспорт видео) и **бэк** (бэк-вокал — тоже в экспорт). Роли заданы в модели (`AudioTrack.role: 'original' | 'minus' | 'back'`); имена фиксированы и не редактируются. Аудио в роль загружается кликом по её шапке в таймлайне (пустая → диалог загрузки).
 
-1. **Воспроизведение** через `<audio>` элемент: play/pause/seek, точный `currentTime`.
-2. **Декодирование** MP3 в `AudioBuffer` через `AudioContext.decodeAudioData` — нужен для:
-   - Точной длительности песни.
-   - PCM для экспорта MP4 (через Mediabunny `AudioBufferSource`).
-   - Расчёта пиков waveform.
+Сырые байты аудио хранятся ВНЕ проекта (в `audioLoader`); дорожка хранит только `audioFileName` + `volumeAutomation`.
 
-`audioBuffer` — декодированный PCM, доступен после `load(file)`.
+## AudioEngine (`src/lib/audioEngine.ts`) — мульти-голос
 
-## Загрузка
+Каждая загруженная роль — «голос» (voice): `<audio>` → `MediaElementSource` → `GainNode` → общий `ctx.destination`. Голоса суммируются на destination. Один общий `AudioContext`.
 
-`load(file)` — создаёт object URL для `<audio>`, декодирует файл в `AudioBuffer`. Длительность (`durationMs`) берётся из `AudioBuffer` или `<audio>.duration`.
+- `loadBytes(role, bytes, filename)` — загрузить/заменить аудио в роли.
+- `clear(role)` — выгрузить аудио роли (слот остаётся).
+- `getBuffer(role)` — декодированный `AudioBuffer` роли (для экспорта/waveform).
+- `applyVolumeAutomation(role, points)` — огибающая громкости роли (gain применяется каждый кадр RAF).
+
+### Режимы воспроизведения
+
+Два режима выбирают, какие голоса звучат:
+- **playback** (`play()`): минус + бэк (если хоть один загружен), иначе оригинал. Используется кнопкой «Пуск».
+- **record** (`playForRecord()`): оригинал (если загружен), иначе минус + бэк. Используется записью таймингов.
+
+Все стартующие голоса начинают одновременно из одной позиции. `currentTimeMs`/`durationMs` — по первому голосу активного набора.
+
+## audioLoader (`src/lib/audioLoader.ts`)
+
+Мост между UI и моделью: `loadAudioIntoRole(role, file)` (декодирует + хранит байты + обновляет `audioFileName`), `clearAudioRole(role)`, `getAudioBytesMap()` (для экспорта — байты по ролям).
 
 ## События
 

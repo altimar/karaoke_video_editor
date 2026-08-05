@@ -8,6 +8,8 @@
  * layout itself — the row top is always provided by the caller.
  */
 import { store } from '../../state/store';
+import { audioEngine } from '../../lib/audioEngine';
+import { computePeaks } from '../../lib/waveform';
 import { insertPoint, removePoint, movePoint, clampGain } from '../../lib/volumeAutomation';
 import { AudioTrack } from '../../types';
 import { AUDIO_ROW_H } from './coords';
@@ -18,16 +20,26 @@ export const audioView: TrackView<AudioTrack> = {
 
   draw(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEnv): void {
     const midY = rowY + AUDIO_ROW_H / 2;
-    // Waveform peaks (mirrored), if audio is loaded.
-    if (env.peaks) {
+    // Waveform peaks (mirrored) for THIS role's audio, if loaded.
+    const buf = audioEngine.getBuffer(track.role);
+    if (buf) {
+      const peaks = computePeaks(buf, Math.max(1, Math.ceil(env.width))).peaks;
       ctx.fillStyle = '#3a5a8c';
       const w = env.width;
       for (let x = 0; x < w; x++) {
-        const idx = Math.floor((x / w) * env.peaks.length);
-        const p = env.peaks[idx] ?? 0;
+        const idx = Math.floor((x / w) * peaks.length);
+        const p = peaks[idx] ?? 0;
         const half = Math.max(1, p * (AUDIO_ROW_H / 2 - 1));
         ctx.fillRect(x, midY - half, 1, half * 2);
       }
+    } else if (!track.audioFileName) {
+      // Empty slot hint.
+      ctx.fillStyle = '#5a5f7e';
+      ctx.font = '11px system-ui';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.fillText('загрузите аудио', env.width / 2, midY);
+      ctx.textAlign = 'left';
     }
     // Separator line under the row.
     ctx.fillStyle = '#2a2e42';

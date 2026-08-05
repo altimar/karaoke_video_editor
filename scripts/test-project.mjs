@@ -26,7 +26,6 @@ console.log('.karaokeproject save/load tests\n');
 // A project with audio + image background + two tracks.
 const RED_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const project = {
-  audioFileName: 'song.mp3',
   durationMs: 10000,
   fps: 30,
   width: 1920,
@@ -47,13 +46,17 @@ const project = {
       rendererSettings: { classic: { lineSlots: 4, fadeMs: 1500, offsetX: 10, offsetY: 20 } },
       lines: [{ syllables: [{ text: 'Yo', startMs: 1000, sep: '' }] }],
     },
+    { id: 'a1', type: 'audio', name: 'Оригинал', role: 'original', audioFileName: '', volumeAutomation: [] },
+    { id: 'a2', type: 'audio', name: 'Минус', role: 'minus', audioFileName: 'song.mp3', volumeAutomation: [] },
+    { id: 'a3', type: 'audio', name: 'Бэк', role: 'back', audioFileName: '', volumeAutomation: [] },
   ],
   activeTrackId: 't1',
 };
 const fakeAudio = new Uint8Array([0xff, 0xfb, 0x90, 0x00, 0x01, 0x02, 0x03, 0x04]);
+const fakeAudioMap = new Map([['minus', fakeAudio]]);
 
 // === Save ===
-const { blob, filename } = saveProject(project, fakeAudio);
+const { blob, filename } = saveProject(project, fakeAudioMap);
 assert(blob instanceof Blob, 'save returns a Blob');
 assert(filename === 'song.karaokeproject', `filename is song.karaokeproject (got ${filename})`);
 
@@ -66,38 +69,40 @@ assert(buf[0] === 0x50 && buf[1] === 0x4b, 'blob is a ZIP (PK signature)');
 const result = loadProject(buf);
 const p = result.project;
 
-assert(result.audioBytes !== null, 'audio bytes extracted');
-assert(result.audioBytes.length === fakeAudio.length, `audio bytes length matches (${result.audioBytes?.length})`);
-assert(result.audioFileName === 'song.mp3', `audio filename preserved (got "${result.audioFileName}")`);
+assert(result.audioByRole.has('minus'), 'minus audio bytes extracted');
+assert(result.audioByRole.get('minus').length === fakeAudio.length, `minus bytes length matches (${result.audioByRole.get('minus').length})`);
+assert(!result.audioByRole.has('back'), 'back audio not present (was empty)');
 
 // Audio bytes content preserved.
-assert(result.audioBytes[0] === 0xff && result.audioBytes[1] === 0xfb, 'audio bytes content preserved');
+const minusBytes = result.audioByRole.get('minus');
+assert(minusBytes[0] === 0xff && minusBytes[1] === 0xfb, 'audio bytes content preserved');
 
 // Background image restored as a data URL (not a marker).
 assert(p.background.bgType === 'image', `bg type preserved (got ${p.background.bgType})`);
 assert(p.background.bgImageDataUrl === `data:image/png;base64,${RED_PNG_B64}`, 'bg image data URL restored from entry');
 
-// Tracks + settings preserved.
-assert(p.tracks.length === 2, `2 tracks preserved (got ${p.tracks.length})`);
-assert(p.tracks[1].name === 'Backing', 'track name preserved');
-const c = p.tracks[1].rendererSettings.classic;
+// Tracks + settings preserved (2 text + 3 audio roles).
+assert(p.tracks.length === 5, `5 tracks preserved (got ${p.tracks.length})`);
+const backing = p.tracks.find((t) => t.name === 'Backing');
+assert(!!backing, 'text track name preserved');
+const c = backing.rendererSettings.classic;
 assert(c && c.offsetX === 10 && c.offsetY === 20, `classic offset preserved (got ${JSON.stringify(c)})`);
 
-// === No audio: still saves/loads, audioBytes is null ===
+// === No audio: still saves/loads, audioByRole is empty ===
 {
   const noAudio = JSON.parse(JSON.stringify(project));
-  noAudio.audioFileName = null;
-  const { blob: b2 } = saveProject(noAudio, null);
+  noAudio.tracks.find((t) => t.role === 'minus').audioFileName = '';
+  const { blob: b2 } = saveProject(noAudio, new Map());
   const r2 = loadProject(new Uint8Array(await b2.arrayBuffer()));
-  assert(r2.audioBytes === null, 'no audio entry → null audioBytes on load');
-  assert(r2.project.tracks.length === 2, 'tracks survive without audio');
+  assert(r2.audioByRole.size === 0, 'no audio entries when nothing loaded');
+  assert(r2.project.tracks.length === 5, 'tracks survive without audio');
 }
 
 // === No background image: bgImageDataUrl is null, no bg entry ===
 {
   const noBg = JSON.parse(JSON.stringify(project));
   noBg.background = { bgType: 'color', bgColor: '#0e0f1a', bgColors: ['#000', '#111'], bgImageDataUrl: null };
-  const { blob: b3 } = saveProject(noBg, fakeAudio);
+  const { blob: b3 } = saveProject(noBg, fakeAudioMap);
   const r3 = loadProject(new Uint8Array(await b3.arrayBuffer()));
   assert(r3.project.background.bgImageDataUrl === null, 'no image → bgImageDataUrl null');
   assert(r3.project.background.bgType === 'color', 'bg type color preserved');

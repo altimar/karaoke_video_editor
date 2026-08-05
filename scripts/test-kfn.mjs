@@ -35,10 +35,11 @@ function style(over = {}) {
   };
 }
 
-/** A two-track project: scroller (main) + classic with an offset (alternate). */
+/** A two-track project: scroller (main) + classic with an offset (alternate),
+ *  plus the three fixed audio roles (minus/back loaded, original empty). */
 function makeProject() {
   return {
-    audioFileName: 'test-song.mp3', durationMs: 10000, fps: 30, width: 1920, height: 1080,
+    durationMs: 10000, fps: 30, width: 1920, height: 1080,
     background: { bgType: 'color', bgColor: '#000', bgColors: ['#000', '#111'], bgImageDataUrl: null },
     tracks: [
       {
@@ -51,7 +52,7 @@ function makeProject() {
           strokeColorActive: 'rgba(10,20,30,0.9)',
           strokeColorInactive: 'rgba(5,5,5,0.7)',
         }),
-        rendererSettings: { scroller: { visibleLines: 8 } },
+        rendererSettings: { scroller: { previewSec: 10 } },
         lines: [
           { syllables: [
             { text: 'Hel', startMs: 0, sep: '' },
@@ -76,11 +77,19 @@ function makeProject() {
           ]},
         ],
       },
+      { id: 'a1', type: 'audio', name: 'Оригинал', role: 'original', audioFileName: '', volumeAutomation: [] },
+      { id: 'a2', type: 'audio', name: 'Минус', role: 'minus', audioFileName: 'test-song.mp3', volumeAutomation: [] },
+      { id: 'a3', type: 'audio', name: 'Бэк', role: 'back', audioFileName: 'back.mp3', volumeAutomation: [] },
     ],
     activeTrackId: 't1',
   };
 }
 const fakeAudio = new Uint8Array([0xff, 0xfb, 0x90, 0x00, 0x01, 0x02, 0x03, 0x04]);
+/** Per-role audio bytes map (minus + back loaded) for export calls. */
+const fakeAudioMap = new Map([
+  ['minus', fakeAudio],
+  ['back', new Uint8Array([0x49, 0x44, 0x33, 0x04, 0x00])],
+]);
 
 /** Parse a CSS color to {r,g,b,a}. Tolerant across #hex / rgba() forms. */
 function parseCss(c) {
@@ -136,16 +145,18 @@ console.log('KFN export + import tests\n');
 
 // === Export (two tracks) ===
 const project = makeProject();
-const { blob, warnings } = await exportToKfn(project, fakeAudio);
+const { blob, warnings } = await exportToKfn(project, fakeAudioMap);
 
 assert(blob instanceof Blob, 'export returns a Blob');
 assert(Array.isArray(warnings), 'export returns a warnings array');
 assert(warnings.length === 0, `no warnings for 2 tracks (got ${warnings.length})`);
 
 const { entries, songIni } = await inspect(blob);
-assert(entries.length === 2, `directory has 2 entries (got ${entries.length})`);
+// minus (type 2) + back (type 2) + Song.ini (type 1).
+assert(entries.length === 3, `directory has 3 entries (got ${entries.length})`);
 assert(entries[0].type === 2, 'first entry is audio (type 2)');
-assert(entries[1].type === 1, 'second entry is Song.ini (type 1)');
+assert(entries[1].type === 2, 'second entry is back audio (type 2)');
+assert(entries[2].type === 1, 'third entry is Song.ini (type 1)');
 
 // EffectCount reflects the number of tracks.
 assert(songIni.includes('EffectCount=2'), 'EffectCount=2 for two tracks');
@@ -154,6 +165,8 @@ assert(songIni.includes('EffectCount=2'), 'EffectCount=2 for two tracks');
 assert(/\[Eff1\]/.test(songIni), '[Eff1] section present');
 assert(/ID=1/.test(songIni), 'Eff1 ID=1');
 assert(/Trajectory=PlainBottomToTop/.test(songIni), 'scroller track writes PlainBottomToTop trajectory');
+// previewSec=10 → Trajectory param 1.0 (10s / 10s base).
+assert(/Trajectory=PlainBottomToTop\*1\.0/.test(songIni), `Trajectory param=1.0 for previewSec=10 (got ${/Trajectory=[^\r\n]+/.exec(songIni)?.[0]})`);
 assert(songIni.includes('Text0=Hel/lo world'), 'Eff1 Text0 correct');
 assert(songIni.includes('Sync0=0,50,100'), 'Eff1 Sync0 in centiseconds');
 assert(/Caption=Основная/.test(songIni), `Eff1 writes Caption=track name (got ${/Caption=.+/.exec(songIni)?.[0]})`);
@@ -178,14 +191,19 @@ assert(/OffsetZ=30/.test(eff1Body), 'scroller writes OffsetZ=30 (KaraFun default
 
 // === Import round-trip ===
 const imported = importFromKfn(new Uint8Array(await blob.arrayBuffer()));
-assert(imported.project.audioFileName === 'test-song.mp3', `audio filename preserved: "${imported.project.audioFileName}"`);
-assert(imported.audioBytes.length === fakeAudio.length, `audio bytes length matches (${imported.audioBytes.length})`);
+// minus bytes round-trip via [General] Source.
+assert(imported.audioByRole.has('minus'), 'minus audio imported');
+assert(imported.audioByRole.get('minus').length === fakeAudio.length, `minus bytes length matches (${imported.audioByRole.get('minus').length})`);
+// back bytes round-trip via [MP3Music] Track0.
+assert(imported.audioByRole.has('back'), 'back audio imported');
 
 const it = imported.project.tracks;
-// 2 text tracks + 1 audio track (the embedded audio becomes an audio track).
-assert(it.length === 3, `3 tracks imported (2 text + 1 audio) (got ${it.length})`);
-assert(it[2].type === 'audio', `track 3 is an audio track (got ${it[2].type})`);
-assert(it[2].audioFileName === 'test-song.mp3', `audio track keeps filename (got "${it[2].audioFileName}")`);
+// 2 text tracks + 3 audio roles (original empty, minus, back).
+assert(it.length === 5, `5 tracks imported (2 text + 3 audio) (got ${it.length})`);
+const minusTrack = it.find((t) => t.type === 'audio' && t.role === 'minus');
+assert(minusTrack && minusTrack.audioFileName === 'test-song.mp3', `minus track keeps filename (got "${minusTrack?.audioFileName}")`);
+const backTrack = it.find((t) => t.type === 'audio' && t.role === 'back');
+assert(backTrack && backTrack.audioFileName === 'back.mp3', `back track keeps filename (got "${backTrack?.audioFileName}")`);
 
 // Track 1: scroller, lyrics round-trip.
 const s0 = it[0].lines.flatMap(l => l.syllables);
@@ -237,7 +255,7 @@ assert(it[0].style.glowBlur === 0, `imported track glow is OFF (got ${it[0].styl
 await (async () => {
   const p = JSON.parse(JSON.stringify(project));
   p.tracks[1].style.strokeWidth = 2;
-  const r = await exportToKfn(p, fakeAudio);
+  const r = await exportToKfn(p, fakeAudioMap);
   const insp = await inspect(r.blob);
   // Track 2 is the SECOND effect ([Eff2]) in a two-track project.
   const eff2 = insp.songIni.split('[Eff2]')[1] ?? '';
@@ -248,7 +266,7 @@ await (async () => {
 await (async () => {
   const p = JSON.parse(JSON.stringify(project));
   p.tracks[0].style.strokeWidth = 10; // beyond KaraFun's max of 5
-  const r = await exportToKfn(p, fakeAudio);
+  const r = await exportToKfn(p, fakeAudioMap);
   const insp = await inspect(r.blob);
   const eff1 = insp.songIni.split('[Eff2]')[0];
   assert(/FrameType=Frame5/.test(eff1), `strokeWidth 10 clamped to Frame5 (got ${/FrameType=.+/.exec(eff1)?.[0]})`);
@@ -263,10 +281,10 @@ await (async () => {
     id: 't3',
       type: 'text', name: 'Третья',
     style: style({ layout: 'scroller' }),
-    rendererSettings: { scroller: { visibleLines: 8 } },
+    rendererSettings: { scroller: { previewSec: 10 } },
     lines: [{ syllables: [{ text: 'Extra', startMs: 4000, sep: '' }] }],
   });
-  const res = await exportToKfn(p, fakeAudio);
+  const res = await exportToKfn(p, fakeAudioMap);
   assert(res.warnings.length > 0, `3 tracks produce a warning (got ${res.warnings.length})`);
   assert(/максимум 2/.test(res.warnings.join(' ')), 'warning mentions the 2-track KaraFun limit');
 })();
@@ -277,10 +295,10 @@ await (async () => {
   // A tiny 1×1 red PNG as a data URL.
   const RED_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
   p.background = { bgType: 'image', bgColor: '#000', bgColors: ['#000', '#111'], bgImageDataUrl: `data:image/png;base64,${RED_PNG_B64}` };
-  const r = await exportToKfn(p, fakeAudio);
+  const r = await exportToKfn(p, fakeAudioMap);
   const insp = await inspect(r.blob);
-  // Directory: audio + image (type 3) + Song.ini.
-  assert(insp.entries.length === 3, `3 directory entries with background (got ${insp.entries.length})`);
+  // Directory: minus (type 2) + back (type 2) + image (type 3) + Song.ini (type 1).
+  assert(insp.entries.length === 4, `4 directory entries with background (got ${insp.entries.length})`);
   const imgEntry = insp.entries.find((e) => e.type === 3);
   assert(!!imgEntry, 'background image stored as a type=3 file');
   assert(/background\.png/.test(imgEntry?.name ?? ''), `image filename is background.png (got "${imgEntry?.name}")`);
@@ -298,9 +316,10 @@ await (async () => {
 
 // === No background → no image entry, no ID=51 effect (default project) ===
 await (async () => {
-  const r = await exportToKfn(project, fakeAudio);
+  const r = await exportToKfn(project, fakeAudioMap);
   const insp = await inspect(r.blob);
-  assert(insp.entries.length === 2, `2 entries without background (got ${insp.entries.length})`);
+  // minus (type 2) + back (type 2) + Song.ini (type 1), no image.
+  assert(insp.entries.length === 3, `3 entries without background (got ${insp.entries.length})`);
   assert(!insp.entries.some((e) => e.type === 3), 'no type=3 entry without a background image');
   assert(!/ID=51/.test(insp.songIni), 'no ID=51 effect without a background image');
 })();

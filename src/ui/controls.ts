@@ -11,8 +11,9 @@ import { invalidateBgImageCache } from '../lib/render';
 import { exportToKfn, collectKfnWarnings } from '../lib/kfnExport';
 import { importFromKfn } from '../lib/kfnImport';
 import { saveProject, loadProject } from '../lib/projectFile';
+import { getAudioBytesMap, setAudioBytesMap } from '../lib/audioLoader';
 import { openExportDialog } from './exportDialog';
-import { createAudioTrack, getAudioTracks } from '../types';
+import { AudioRole, getAudioTrackByRole } from '../types';
 
 export type ToastFn = (msg: string, kind?: 'ok' | 'err' | 'info') => void;
 
@@ -23,43 +24,9 @@ export function createTopbar(toast: ToastFn): {
   const root = document.createElement('div');
   root.className = 'topbar';
 
-  // Raw MP3 bytes kept for KFN export (KFN embeds the original audio as-is).
-  let audioBytes: Uint8Array | null = null;
-
   const title = document.createElement('h1');
   title.textContent = '🎤 Karaoke Video Editor';
   root.appendChild(title);
-
-  // --- Audio load ---
-  const audioBtn = document.createElement('button');
-  audioBtn.textContent = '🎵 Загрузить MP3';
-  const audioInput = document.createElement('input');
-  audioInput.type = 'file';
-  audioInput.accept = 'audio/mpeg,audio/mp3,.mp3';
-  audioInput.style.display = 'none';
-  audioBtn.addEventListener('click', () => audioInput.click());
-  audioInput.addEventListener('change', async () => {
-    const f = audioInput.files?.[0];
-    if (!f) return;
-    try {
-      await audioEngine.load(f);
-      audioBytes = new Uint8Array(await f.arrayBuffer());
-      store.mutate((p) => {
-        p.audioFileName = f.name;
-        p.durationMs = audioEngine.durationMs;
-        // Create an audio track if the project doesn't have one yet.
-        if (getAudioTracks(p).length === 0) {
-          p.tracks.push(createAudioTrack('минус', f.name));
-        }
-      });
-      toast(`Загружено: ${f.name}`, 'ok');
-      refreshAll();
-    } catch {
-      toast('Не удалось декодировать аудио', 'err');
-    }
-  });
-  root.appendChild(audioBtn);
-  root.appendChild(audioInput);
 
   // --- Play / pause ---
   const playBtn = document.createElement('button');
@@ -75,8 +42,8 @@ export function createTopbar(toast: ToastFn): {
   recBtn.addEventListener('click', () => {
     if (timingCapture.isRecording()) {
       timingCapture.stop();
-    } else if (!audioEngine.audioBuffer) {
-      toast('Сначала загрузите MP3', 'err');
+    } else if (!audioEngine.has('original') && !audioEngine.has('minus') && !audioEngine.has('back')) {
+      toast('Сначала загрузите аудио', 'err');
     } else {
       // start from beginning if no timings yet
       timingCapture.start();
@@ -91,7 +58,7 @@ export function createTopbar(toast: ToastFn): {
   saveBtn.textContent = '💾 Сохранить проект';
   saveBtn.addEventListener('click', () => {
     try {
-      const { blob, filename } = saveProject(store.getProject(), audioBytes);
+      const { blob, filename } = saveProject(store.getProject(), getAudioBytesMap());
       downloadBlob(blob, filename);
       toast('Проект сохранён', 'ok');
     } catch (err) {
@@ -114,11 +81,11 @@ export function createTopbar(toast: ToastFn): {
     try {
       const bytes = new Uint8Array(await f.arrayBuffer());
       const result = loadProject(bytes);
-      // Load audio first (so duration is known), then apply the project.
-      if (result.audioBytes && result.audioFileName) {
-        await audioEngine.loadBytes(result.audioBytes, result.audioFileName);
-        audioBytes = result.audioBytes;
+      // Load each role's audio into the engine + register bytes for export.
+      for (const [role, data] of result.audioByRole) {
+        await audioEngine.loadBytes(role, data, role);
       }
+      setAudioBytesMap(result.audioByRole);
       store.setProject(result.project);
       invalidateBgImageCache();
       toast('Проект загружен', 'ok');
@@ -146,21 +113,21 @@ export function createTopbar(toast: ToastFn): {
     try {
       const bytes = new Uint8Array(await f.arrayBuffer());
       const result = importFromKfn(bytes);
-      // Load audio.
-      await audioEngine.loadBytes(result.audioBytes, result.project.audioFileName);
-      audioBytes = result.audioBytes;
-      // Load one or more text tracks from the KFN text effects, plus the
-      // background image if the file had one.
+      // Load each role's audio into the engine + register bytes for export.
+      for (const [role, data] of result.audioByRole) {
+        await audioEngine.loadBytes(role, data, role);
+      }
+      setAudioBytesMap(result.audioByRole);
+      // Replace the project's tracks + background.
       store.mutate((p) => {
         p.tracks = result.project.tracks;
         p.activeTrackId = result.project.tracks[0].id;
-        p.audioFileName = result.project.audioFileName;
         p.durationMs = audioEngine.durationMs;
         p.background = result.project.background;
       });
       invalidateBgImageCache();
-      const n = result.project.tracks.length;
-      toast(`KFN загружен: ${result.project.audioFileName} (${n} ${pluralTracks(n)})`, 'ok');
+      const n = result.project.tracks.filter((t) => t.type === 'text').length;
+      toast(`KFN загружен (${n} ${pluralTracks(n)})`, 'ok');
       refreshAll();
     } catch (err) {
       console.error(err);
@@ -206,13 +173,15 @@ export function createTopbar(toast: ToastFn): {
 
   // --- Export flow: tabbed dialog (Video / KaraFun) → render/build → download ---
   function onExport(btn: HTMLButtonElement): void {
-    const buffer = audioEngine.audioBuffer;
     const project = store.getProject();
-    if (!buffer || !audioBytes) {
-      toast('Загрузите MP3 перед экспортом', 'err');
+    const audioBytesMap = getAudioBytesMap();
+    const hasExportAudio = audioBytesMap.size > 0;
+    if (!hasExportAudio) {
+      toast('Загрузите аудио (минус/бэк) перед экспортом', 'err');
       return;
     }
-    const audio = audioBytes; // non-null snapshot for the async closure below
+    // Snapshot of the per-role audio bytes for the async export closure.
+    const audioMap = new Map(audioBytesMap);
     if (project.durationMs <= 0) {
       store.mutate((p) => (p.durationMs = audioEngine.durationMs));
     }
@@ -232,28 +201,39 @@ export function createTopbar(toast: ToastFn): {
 
     dialog.promise
       .then(async (choice) => {
+        // Output filename: prefer minus, else back, else original.
+        const srcName =
+          getAudioTrackByRole(store.getProject(), 'minus')?.audioFileName ||
+          getAudioTrackByRole(store.getProject(), 'back')?.audioFileName ||
+          getAudioTrackByRole(store.getProject(), 'original')?.audioFileName ||
+          'karaoke';
+        const baseName = srcName.replace(/\.[^.]+$/, '');
         if (choice.format === 'mp4') {
           if (!canExport()) {
             throw new Error('Экспорт видео недоступен — нужен Chrome/Edge (WebCodecs)');
           }
+          // Gather decoded buffers per role from the engine for the mix.
+          const bufByRole = new Map<AudioRole, AudioBuffer>();
+          for (const role of ['minus', 'back'] as AudioRole[]) {
+            const buf = audioEngine.getBuffer(role);
+            if (buf) bufByRole.set(role, buf);
+          }
           const blob = await exportToMp4(
             store.getProject(),
-            buffer,
+            bufByRole,
             { qualityId: choice.qualityId, signal: abort.signal },
             (frac) => dialog.setProgress(frac),
           );
           dialog.close();
-          const name = (project.audioFileName?.replace(/\.[^.]+$/, '') || 'karaoke') + '.mp4';
-          downloadBlob(blob, name);
+          downloadBlob(blob, baseName + '.mp4');
           toast('Готово! MP4 скачан', 'ok');
         } else {
-          const result = await exportToKfn(store.getProject(), audio, {
+          const result = await exportToKfn(store.getProject(), audioMap, {
             signal: abort.signal,
             onProgress: (frac) => dialog.setProgress(frac),
           });
           dialog.close();
-          const name = (project.audioFileName?.replace(/\.[^.]+$/, '') || 'karaoke') + '.kfn';
-          downloadBlob(result.blob, name);
+          downloadBlob(result.blob, baseName + '.kfn');
           if (result.warnings.length > 0) {
             toast(result.warnings.join(' '), 'err');
           } else {

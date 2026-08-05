@@ -71,7 +71,7 @@ class TimingCapture {
     this.recording = true;
     this.attachKeyListener();
     this.emit();
-    void audioEngine.play();
+    void audioEngine.playForRecord();
   }
 
   /** Stop recording (does not pause audio). */

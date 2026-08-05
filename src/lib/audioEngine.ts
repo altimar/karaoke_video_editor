@@ -1,134 +1,212 @@
 /**
- * Audio engine.
+ * Audio engine — multi-voice playback.
  *
- * Two responsibilities:
- *  1. Play/pause/seek the loaded MP3 via an <audio> element for the editing UX.
- *  2. Decode the MP3 once into an AudioBuffer (via AudioContext) — needed both
- *     to know the exact duration and to feed PCM to the MP4 exporter.
+ * A project has three fixed audio roles: 'original' (reference for timing
+ * capture), 'minus' (instrumental — mixed into the video export) and 'back'
+ * (backing vocals — also mixed into the export). Each loaded role becomes a
+ * "voice": an <audio> element → MediaElementSource → GainNode → destination.
+ * Voices sum at the shared AudioContext destination.
  *
- * The <audio> element is used for playback because it's the simplest reliable
- * way to play sound in the browser; AudioContext is only used for decoding.
+ * Two playback modes select WHICH voices are audible:
+ *  - playback (`play`): minus + back if either is loaded, else original.
+ *  - record  (`playForRecord`): original if loaded, else minus + back.
+ *
+ * All started voices stay sample-aligned because they start from the same seek
+ * position at the same instant. currentTimeMs / durationMs are read from the
+ * "primary" voice of the active set.
  */
-import { Project } from '../types';
-import { VolumePoint } from '../types';
+import { AudioRole, VolumePoint } from '../types';
 import { gainAtTime } from './volumeAutomation';
 
 export type AudioStateListener = (playing: boolean) => void;
 export type TimeListener = (timeMs: number) => void;
 
-export class AudioEngine {
-  private audio: HTMLAudioElement;
+/** One loaded audio source: element + Web Audio graph + decoded buffer + envelope. */
+interface Voice {
+  role: AudioRole;
+  audio: HTMLAudioElement;
+  sourceNode: MediaElementAudioSourceNode;
+  gainNode: GainNode;
+  buffer: AudioBuffer | null;
+  url: string | null;
+  automation: VolumePoint[];
+}
+
+class AudioEngine {
   private ctx: AudioContext | null = null;
-  private buffer: AudioBuffer | null = null;
-  private url: string | null = null;
-  /** Web Audio graph for live playback: source → gain → destination. */
-  private sourceNode: MediaElementAudioSourceNode | null = null;
-  private gainNode: GainNode | null = null;
-  /** Currently applied automation, so we can re-apply on seek/replay. */
-  private automation: VolumePoint[] = [];
+  private voices = new Map<AudioRole, Voice>();
+  /** Roles currently playing (subset of loaded roles, chosen by the play mode). */
+  private activeRoles: AudioRole[] = [];
+  /** The role used as the time/duration reference. */
+  private primaryRole: AudioRole | null = null;
 
   private audioStateListeners = new Set<AudioStateListener>();
   private timeListeners = new Set<TimeListener>();
   private rafId: number | null = null;
 
-  constructor() {
-    this.audio = new Audio();
-    this.audio.preload = 'auto';
-    this.audio.addEventListener('play', () => this.notifyState(true));
-    this.audio.addEventListener('pause', () => {
-      this.notifyState(false);
-      this.stopTimeLoop();
-    });
-    this.audio.addEventListener('ended', () => {
-      this.notifyState(false);
-      this.stopTimeLoop();
-    });
-  }
-
-  get isPlaying(): boolean {
-    return !this.audio.paused && !this.audio.ended;
-  }
-
-  get currentTimeMs(): number {
-    return (this.audio.currentTime || 0) * 1000;
-  }
-
-  get durationMs(): number {
-    if (this.audio.duration && isFinite(this.audio.duration)) {
-      return this.audio.duration * 1000;
-    }
-    return this.buffer ? this.buffer.duration * 1000 : 0;
-  }
-
-  get audioBuffer(): AudioBuffer | null {
-    return this.buffer;
-  }
-
-  /** Load an MP3 file: set up playback and decode to AudioBuffer. */
-  async load(file: File): Promise<void> {
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    await this.loadBytes(bytes, file.name);
-  }
-
-  /** Load audio from raw bytes (e.g. extracted from a KFN file). */
-  async loadBytes(bytes: Uint8Array, _fileName: string): Promise<void> {
-    // Revoke previous object URL to avoid leaks.
-    if (this.url) URL.revokeObjectURL(this.url);
-    const blob = new Blob([bytes.buffer as ArrayBuffer]);
-    this.url = URL.createObjectURL(blob);
-    this.audio.src = this.url;
-    this.audio.load();
-
-    // Decode for the exporter + precise duration. Reuse a single AudioContext.
+  /** Lazily create the shared AudioContext (browsers need a user gesture). */
+  private ensureCtx(): AudioContext {
     if (!this.ctx) {
       const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       this.ctx = new Ctor();
     }
-    // Build the playback graph once: <audio> → GainNode → destination.
-    // createMediaElementSource can be called only ONCE per element, so we do it
-    // lazily and keep the node. The <audio> element still drives seek/pause.
-    if (!this.sourceNode) {
-      this.sourceNode = this.ctx.createMediaElementSource(this.audio);
-      this.gainNode = this.ctx.createGain();
-      this.sourceNode.connect(this.gainNode);
-      this.gainNode.connect(this.ctx.destination);
-    }
+    return this.ctx;
+  }
+
+  /** Build (once per role) the voice graph: <audio> → gain → destination. */
+  private ensureVoice(role: AudioRole, ctx: AudioContext): Voice {
+    const existing = this.voices.get(role);
+    if (existing) return existing;
+    const audio = new Audio();
+    audio.preload = 'auto';
+    const sourceNode = ctx.createMediaElementSource(audio);
+    const gainNode = ctx.createGain();
+    sourceNode.connect(gainNode);
+    gainNode.connect(ctx.destination);
+    audio.addEventListener('play', () => this.notifyState(true));
+    audio.addEventListener('pause', () => this.onElementPause());
+    audio.addEventListener('ended', () => this.onElementPause());
+    const voice: Voice = { role, audio, sourceNode, gainNode, buffer: null, url: null, automation: [] };
+    this.voices.set(role, voice);
+    return voice;
+  }
+
+  /** Load raw audio bytes into a role's voice. Replaces any prior audio there. */
+  async loadBytes(role: AudioRole, bytes: Uint8Array, _fileName: string): Promise<void> {
+    const ctx = this.ensureCtx();
+    const v = this.ensureVoice(role, ctx);
+    if (v.url) URL.revokeObjectURL(v.url);
+    const blob = new Blob([bytes.buffer as ArrayBuffer]);
+    v.url = URL.createObjectURL(blob);
+    v.audio.src = v.url;
+    v.audio.load();
     const arrBuf = (bytes.buffer as ArrayBuffer).slice(0);
-    // decodeAudioData copies the buffer, so arrBuf can be reused/dropped.
-    this.buffer = await this.ctx.decodeAudioData(arrBuf.slice(0));
-    // Re-apply automation (if any was set before this load).
-    this.applyVolumeAutomation(this.automation, this.durationMs);
+    v.buffer = await ctx.decodeAudioData(arrBuf.slice(0));
+    // Apply any automation already set on this voice.
+    v.gainNode.gain.value = gainAtTime(v.automation, this.currentTimeMs);
   }
 
-  /**
-   * Store the volume-automation points. The actual gain is applied each
-   * animation frame in the playback time loop (see startTimeLoop), reading the
-   * gain for the current playback position. This avoids the clock-drift issues
-   * of programming setValueAtTime against MediaElementAudioSourceNode (whose
-   * AudioContext clock and <audio> currentTime run independently and drift
-   * apart on seek/pause). Imperative .value writes are sample-accurate enough
-   * for a UI-driven envelope and stay perfectly in sync with playback.
-   */
-  applyVolumeAutomation(points: VolumePoint[], _durationMs: number): void {
-    this.automation = points;
-    // Apply immediately so a change while paused is reflected on next play.
-    if (this.gainNode) this.gainNode.gain.value = gainAtTime(points, this.currentTimeMs);
+  /** Clear (unload) a role's audio — the slot becomes empty. */
+  clear(role: AudioRole): void {
+    const v = this.voices.get(role);
+    if (!v) return;
+    v.audio.pause();
+    v.audio.removeAttribute('src');
+    v.audio.load();
+    if (v.url) URL.revokeObjectURL(v.url);
+    v.url = null;
+    v.buffer = null;
+    if (this.primaryRole === role) this.primaryRole = null;
+    this.activeRoles = this.activeRoles.filter((r) => r !== role);
   }
 
-  async play(): Promise<void> {
-    if (!this.ctx) return;
-    // Browsers suspend AudioContext until a user gesture; resume to be safe.
-    if (this.ctx.state === 'suspended') await this.ctx.resume();
-    try {
-      await this.audio.play();
-      this.startTimeLoop();
-    } catch {
-      /* autoplay rejection — ignore, UI reflects paused state */
+  /** Decoded buffer for a role (for export), or null if not loaded. */
+  getBuffer(role: AudioRole): AudioBuffer | null {
+    return this.voices.get(role)?.buffer ?? null;
+  }
+
+  /** True if a role has audio loaded. */
+  has(role: AudioRole): boolean {
+    return !!this.voices.get(role)?.buffer;
+  }
+
+  /** Store a role's volume-automation envelope; gain is applied per RAF tick. */
+  applyVolumeAutomation(role: AudioRole, points: VolumePoint[]): void {
+    const v = this.voices.get(role);
+    if (!v) return;
+    v.automation = points;
+    v.gainNode.gain.value = gainAtTime(points, this.currentTimeMs);
+  }
+
+  // --- Playback mode selection ---
+
+  /** Roles for normal playback: minus + back if either is loaded, else original. */
+  private playbackRoles(): AudioRole[] {
+    const loaded = (rs: AudioRole[]) => rs.filter((r) => this.has(r));
+    const mix = loaded(['minus', 'back']);
+    if (mix.length > 0) return mix;
+    return loaded(['original']);
+  }
+
+  /** Roles for timing-capture playback: original if loaded, else minus + back. */
+  private recordRoles(): AudioRole[] {
+    if (this.has('original')) return ['original'];
+    return (['minus', 'back'] as AudioRole[]).filter((r) => this.has(r));
+  }
+
+  get isPlaying(): boolean {
+    for (const r of this.activeRoles) {
+      const v = this.voices.get(r);
+      if (v && !v.audio.paused && !v.audio.ended) return true;
     }
+    return false;
+  }
+
+  get currentTimeMs(): number {
+    const v = this.primaryVoice();
+    return v ? (v.audio.currentTime || 0) * 1000 : 0;
+  }
+
+  get durationMs(): number {
+    const v = this.primaryVoice();
+    if (v && v.audio.duration && isFinite(v.audio.duration)) return v.audio.duration * 1000;
+    if (v && v.buffer) return v.buffer.duration * 1000;
+    // Fallback: longest loaded voice.
+    let max = 0;
+    for (const voice of this.voices.values()) {
+      if (voice.buffer) max = Math.max(max, voice.buffer.duration * 1000);
+    }
+    return max;
+  }
+
+  /** The voice used as the time/duration reference. */
+  private primaryVoice(): Voice | null {
+    if (this.primaryRole) return this.voices.get(this.primaryRole) ?? null;
+    // Default to the first loaded voice.
+    for (const voice of this.voices.values()) {
+      if (voice.buffer) return voice;
+    }
+    return null;
+  }
+
+  /** Start playback of the normal mix (minus+back, else original). */
+  async play(): Promise<void> {
+    await this.startRoles(this.playbackRoles());
+  }
+
+  /** Start playback for timing capture (original, else minus+back). */
+  async playForRecord(): Promise<void> {
+    await this.startRoles(this.recordRoles());
+  }
+
+  /** Start a chosen set of roles together from the current position. */
+  private async startRoles(roles: AudioRole[]): Promise<void> {
+    if (roles.length === 0) return;
+    const ctx = this.ensureCtx();
+    if (ctx.state === 'suspended') await ctx.resume();
+    this.activeRoles = roles;
+    this.primaryRole = roles[0];
+    const t = this.currentTimeMs / 1000;
+    // Start all voices from the same position simultaneously.
+    await Promise.all(
+      roles.map(async (r) => {
+        const v = this.voices.get(r);
+        if (!v) return;
+        try {
+          v.audio.currentTime = t;
+          await v.audio.play();
+        } catch {
+          /* autoplay rejection — ignore */
+        }
+      }),
+    );
+    this.startTimeLoop();
   }
 
   pause(): void {
-    this.audio.pause();
+    for (const r of this.activeRoles) {
+      this.voices.get(r)?.audio.pause();
+    }
     this.stopTimeLoop();
   }
 
@@ -138,11 +216,16 @@ export class AudioEngine {
   }
 
   seek(timeMs: number): void {
-    this.audio.currentTime = Math.max(0, timeMs / 1000);
+    const t = Math.max(0, timeMs / 1000);
+    // Seek every loaded voice so any subset can resume from here.
+    for (const v of this.voices.values()) {
+      if (v.buffer) v.audio.currentTime = t;
+    }
     this.notifyTime(timeMs);
-    // Re-program automation from the new playback position so gain is correct
-    // after a jump (AudioParam automation is timeline-based, not seek-aware).
-    this.applyVolumeAutomation(this.automation, this.durationMs);
+    // Re-apply each voice's envelope from the new position.
+    for (const v of this.voices.values()) {
+      if (v.buffer) v.gainNode.gain.value = gainAtTime(v.automation, timeMs);
+    }
   }
 
   /** Skip by delta milliseconds, keeping within bounds. */
@@ -166,9 +249,11 @@ export class AudioEngine {
     this.stopTimeLoop();
     const tick = () => {
       const timeMs = this.currentTimeMs;
-      // Apply the volume envelope for the current playback position every frame.
-      // Imperative .value keeps gain in sync with <audio> regardless of seek/pause.
-      if (this.gainNode) this.gainNode.gain.value = gainAtTime(this.automation, timeMs);
+      // Apply each active voice's envelope for the current position.
+      for (const r of this.activeRoles) {
+        const v = this.voices.get(r);
+        if (v) v.gainNode.gain.value = gainAtTime(v.automation, timeMs);
+      }
       this.notifyTime(timeMs);
       if (this.isPlaying) this.rafId = requestAnimationFrame(tick);
     };
@@ -182,17 +267,20 @@ export class AudioEngine {
     }
   }
 
+  /** When any voice pauses/ends, stop the loop once none are playing. */
+  private onElementPause(): void {
+    if (!this.isPlaying) {
+      this.notifyState(false);
+      this.stopTimeLoop();
+    }
+  }
+
   private notifyState(playing: boolean): void {
     for (const l of this.audioStateListeners) l(playing);
   }
 
   private notifyTime(timeMs: number): void {
     for (const l of this.timeListeners) l(timeMs);
-  }
-
-  /** Apply project duration (in case audio not loaded yet but we know length). */
-  applyToProject(_project: Project): void {
-    // Hook for future use; duration is read live from the engine.
   }
 }
 

@@ -11,7 +11,7 @@ import { createTimeline } from './ui/timeline';
 import { canExport } from './lib/export';
 import { store } from './state/store';
 import { audioEngine } from './lib/audioEngine';
-import { getActiveAudioTrack } from './types';
+import { getAudioTracks } from './types';
 
 function toast(msg: string, kind: 'ok' | 'err' | 'info' = 'info'): void {
   const node = document.createElement('div');
@@ -60,11 +60,12 @@ function main(): void {
   // Timeline at the bottom
   app.appendChild(createTimeline().root);
 
-  // Keep the live audio gain in sync with the active audio track's automation.
+  // Keep each audio voice's gain in sync with its track's volume automation.
   store.subscribe(() => {
     const p = store.getProject();
-    const at = getActiveAudioTrack(p);
-    audioEngine.applyVolumeAutomation(at?.volumeAutomation ?? [], p.durationMs);
+    for (const at of getAudioTracks(p)) {
+      audioEngine.applyVolumeAutomation(at.role, at.volumeAutomation);
+    }
   });
 }
 

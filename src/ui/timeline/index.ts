@@ -13,9 +13,9 @@
 import { store } from '../../state/store';
 import { audioEngine } from '../../lib/audioEngine';
 import { timingCapture } from '../../lib/timing';
-import { computePeaks } from '../../lib/waveform';
 import { flatSyllables } from '../../lib/textParser';
-import { Project, createTextTrack } from '../../types';
+import { Project, AudioTrack, createTextTrack } from '../../types';
+import { loadAudioIntoRole, clearAudioRole } from '../../lib/audioLoader';
 import { RULER_H, TOP_PAD, TRACK_PAD, rowHeight, trackTopForIndex, trackIndexAtY } from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
 import { textView, pickMarker } from './textView';
@@ -202,13 +202,10 @@ export function createTimeline(): { root: HTMLElement } {
     draw();
   });
 
-  /** Build the shared env for the current frame (coords + peaks). */
+  /** Build the shared env for the current frame. */
   function makeEnv(): TimelineEnv {
     const cssW = contentWidth();
-    const peaks = audioEngine.audioBuffer
-      ? computePeaks(audioEngine.audioBuffer, Math.max(1, Math.ceil(cssW))).peaks
-      : null;
-    return { msToX, xToMs, durationMs, width: cssW, peaks };
+    return { msToX, xToMs, durationMs, width: cssW };
   }
 
   // --- Gutter (left headers) ---
@@ -218,7 +215,8 @@ export function createTimeline(): { root: HTMLElement } {
   function renderGutter(): void {
     const project = store.getProject();
     const sig =
-      project.tracks.map((t) => `${t.id}:${t.type}:${t.name}`).join('|') + '@' + project.activeTrackId;
+      project.tracks.map((t) => `${t.id}:${t.type}:${t.name}:${t.type === 'audio' ? t.audioFileName : ''}`).join('|') +
+      '@' + project.activeTrackId;
     if (sig === lastGutterSig) return;
     lastGutterSig = sig;
     gutter.innerHTML = '';
@@ -249,16 +247,86 @@ export function createTimeline(): { root: HTMLElement } {
         (track.type === 'audio' ? ' audio' : '');
       th.style.height = rowHeight(track) + TRACK_PAD + 'px';
       th.title = 'Сделать эту дорожку активной';
+
       const name = document.createElement('span');
       name.className = 'timeline-track-name';
-      name.textContent = (track.type === 'audio' ? '🎵 ' : '🎤 ') + track.name;
+      if (track.type === 'audio') {
+        name.textContent = '🎵 ' + track.name;
+      } else {
+        name.textContent = '🎤 ' + track.name;
+      }
       th.appendChild(name);
-      th.addEventListener('click', () => {
-        if (track.id === store.getProject().activeTrackId) return;
+
+      // Click on the header body: activate the track; for an empty audio role,
+      // also open the load-audio dialog.
+      th.addEventListener('click', (e) => {
+        // Let the delete button handle its own click.
+        if ((e.target as HTMLElement).closest('.timeline-track-del')) return;
         store.mutate((p) => (p.activeTrackId = track.id));
+        if (track.type === 'audio' && !track.audioFileName) {
+          openAudioPicker(track);
+        }
       });
+
+      // Delete / clear button.
+      const del = document.createElement('span');
+      del.className = 'timeline-track-del';
+      del.textContent = '×';
+      if (track.type === 'audio') {
+        // Audio: clear the audio (slot stays). Only show if audio is loaded.
+        del.title = 'Очистить аудио';
+        del.style.display = track.audioFileName ? '' : 'none';
+        del.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (!confirm(`Очистить аудио в дорожке «${track.name}»?`)) return;
+          clearAudioRole(track.role);
+        });
+      } else {
+        // Text: delete the track (needs at least one text track to remain).
+        del.title = 'Удалить дорожку';
+        const proj = store.getProject();
+        del.style.display = proj.tracks.filter((t) => t.type === 'text').length > 1 ? '' : 'none';
+        del.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (!confirm(`Удалить дорожку «${track.name}»?`)) return;
+          store.mutate((p) => {
+            const idx = p.tracks.findIndex((t) => t.id === track.id);
+            if (idx < 0) return;
+            p.tracks.splice(idx, 1);
+            // Pick a neighbor as the new active track.
+            const nextIdx = Math.min(idx, p.tracks.length - 1);
+            p.activeTrackId = p.tracks[nextIdx].id;
+          });
+        });
+      }
+      th.appendChild(del);
+
       gutter.appendChild(th);
     }
+  }
+
+  /** Hidden file input reused for loading audio into a role. */
+  const audioInput = document.createElement('input');
+  audioInput.type = 'file';
+  audioInput.accept = 'audio/mpeg,audio/mp3,.mp3,audio/wav,.wav,audio/ogg,.ogg';
+  audioInput.style.display = 'none';
+  let pendingRole: import('../../types').AudioRole | null = null;
+  audioInput.addEventListener('change', async () => {
+    const f = audioInput.files?.[0];
+    if (!f || !pendingRole) return;
+    try {
+      await loadAudioIntoRole(pendingRole, f);
+    } catch {
+      /* decode error — ignore */
+    }
+    audioInput.value = '';
+    pendingRole = null;
+  });
+  scroll.parentElement?.appendChild(audioInput);
+
+  function openAudioPicker(track: AudioTrack): void {
+    pendingRole = track.role;
+    audioInput.click();
   }
 
   function fmtTime(ms: number): string {

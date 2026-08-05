@@ -17,9 +17,8 @@ import {
   AudioBufferSource,
   Quality,
 } from 'mediabunny';
-import { Project, TextTrack, Track, VolumePoint } from '../types';
+import { Project, TextTrack, Track, VolumePoint, AudioRole, getAudioTrackByRole } from '../types';
 import { renderFrame } from './render';
-import { getActiveAudioTrack } from '../types';
 
 /**
  * Build a copy of the project scaled to the target resolution, multiplying all
@@ -50,40 +49,42 @@ function scaledProject(project: Project, targetW: number, targetH: number): Proj
 }
 
 /**
- * Render an AudioBuffer with a volume-automation envelope applied, producing a
- * NEW AudioBuffer (the source is never mutated). Uses OfflineAudioContext so the
- * gain curve is baked in during an offline render — identical to how the live
- * GainNode would shape playback. Returns the original buffer unchanged when
- * there are no automation points (flat gain 1.0).
+ * Mix + render several audio buffers (each with its own volume automation) into
+ * ONE AudioBuffer, summing them at the destination. Used for the video export:
+ * the 'minus' and 'back' roles are combined (the 'original' role is excluded).
+ * Each buffer is played through its own GainNode programmed from its envelope,
+ * so the export matches the live playback mix. All buffers must share a sample
+ * rate (they do — decoded through one AudioContext).
  */
-export async function renderAudioWithGain(
-  buffer: AudioBuffer,
-  points: VolumePoint[],
+export async function renderMixedAudioWithGain(
+  stems: { buffer: AudioBuffer; points: VolumePoint[] }[],
 ): Promise<AudioBuffer> {
-  if (points.length === 0) return buffer; // nothing to do
+  if (stems.length === 0) throw new Error('Нет аудио для рендера');
+  // Single stem, no automation → return as-is (no work needed).
+  if (stems.length === 1 && stems[0].points.length === 0) return stems[0].buffer;
+  const sampleRate = stems[0].buffer.sampleRate;
+  const channels = Math.max(1, ...stems.map((s) => s.buffer.numberOfChannels));
+  const maxDurSec = Math.max(...stems.map((s) => s.buffer.duration));
+  const length = Math.ceil(maxDurSec * sampleRate);
   const Ctor = window.OfflineAudioContext || (window as unknown as { webkitOfflineAudioContext: typeof OfflineAudioContext }).webkitOfflineAudioContext;
-  const ctx = new Ctor(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  const gain = ctx.createGain();
-  // Program the envelope in the offline timeline (starts at 0s).
-  const g = gain.gain;
-  if (points.length === 1) {
-    g.setValueAtTime(points[0].gain, 0);
-  } else {
-    g.setValueAtTime(points[0].gain, 0);
-    for (let i = 1; i < points.length; i++) {
-      g.linearRampToValueAtTime(points[i].gain, points[i].timeMs / 1000);
+  const ctx = new Ctor(channels, length, sampleRate);
+  for (const { buffer, points } of stems) {
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const gain = ctx.createGain();
+    if (points.length > 0) {
+      const g = gain.gain;
+      g.setValueAtTime(points[0].gain, 0);
+      for (let i = 1; i < points.length; i++) {
+        g.linearRampToValueAtTime(points[i].gain, points[i].timeMs / 1000);
+      }
+      g.setValueAtTime(points[points.length - 1].gain, maxDurSec);
     }
+    src.connect(gain);
+    gain.connect(ctx.destination);
+    src.start(0);
   }
-  // Hold the last value to the end.
-  const last = points[points.length - 1];
-  g.setValueAtTime(last.gain, buffer.duration);
-  src.connect(gain);
-  gain.connect(ctx.destination);
-  src.start(0);
-  const rendered = await ctx.startRendering();
-  return rendered;
+  return ctx.startRendering();
 }
 
 export type ProgressFn = (fraction: number) => void;
@@ -147,14 +148,17 @@ export function canExport(): boolean {
  * authored) and then scaled onto the target-resolution canvas, so the picture
  * looks identical at every quality — only the output size and bitrate change.
  *
- * @param project The project (audioBuffer must be passed separately).
- * @param audioBuffer Decoded PCM of the song. Required.
- * @param options   Quality preset + optional abort signal.
+ * The audio track is the MIX of the 'minus' and 'back' roles (each with its own
+ * volume automation); the 'original' role is excluded from the export.
+ *
+ * @param project  The project.
+ * @param audioByRole  Decoded PCM per role (only minus/back are used here).
+ * @param options  Quality preset + optional abort signal.
  * @param onProgress Called with 0..1 as frames are encoded.
  */
 export async function exportToMp4(
   project: Project,
-  audioBuffer: AudioBuffer,
+  audioByRole: Map<AudioRole, AudioBuffer>,
   options: ExportOptions,
   onProgress?: ProgressFn,
 ): Promise<Blob> {
@@ -237,10 +241,17 @@ export async function exportToMp4(
     }
 
     checkCanceled();
-    // Apply volume automation (if any) via an offline render, then feed the
-    // whole song audio; AudioBufferSource timestamps it starting at 0.
-    const audioTrack = getActiveAudioTrack(project);
-    const finalAudio = await renderAudioWithGain(audioBuffer, audioTrack?.volumeAutomation ?? []);
+    // Mix the 'minus' and 'back' roles (each with its own volume automation)
+    // into a single buffer; the 'original' role is excluded from the export.
+    const stems: { buffer: AudioBuffer; points: VolumePoint[] }[] = [];
+    for (const role of ['minus', 'back'] as AudioRole[]) {
+      const buf = audioByRole.get(role);
+      if (!buf) continue;
+      const at = getAudioTrackByRole(project, role);
+      stems.push({ buffer: buf, points: at?.volumeAutomation ?? [] });
+    }
+    if (stems.length === 0) throw new ExportError('Нет аудио (минус/бэк) для экспорта.');
+    const finalAudio = await renderMixedAudioWithGain(stems);
     await audioSource.add(finalAudio);
 
     checkCanceled();

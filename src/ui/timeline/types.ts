@@ -21,8 +21,6 @@ export interface TimelineEnv {
   durationMs: () => number;
   /** Canvas content width in px (at the current zoom). */
   width: number;
-  /** Pre-computed waveform peaks for the current width, or null if no audio. */
-  peaks: Float32Array | null;
 }
 
 /** A drag a track view claimed via hitTest — carried across pointermove. */

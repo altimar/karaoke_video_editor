@@ -285,7 +285,7 @@ textarea.lyrics {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 220px;
+  max-height: 340px;
   /* The timeline is the bottom grid row of #app; cap its width so the wide
      zoomed canvas inside can never push the whole layout wider than viewport. */
   min-width: 0;
@@ -377,9 +377,24 @@ textarea.lyrics {
   background: rgba(255, 225, 77, 0.06);
 }
 .timeline-track-name {
+  flex: 1 1 auto;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Delete/clear button on a track header (× on the right). */
+.timeline-track-del {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 2px;
+}
+.timeline-track-del:hover {
+  color: var(--danger);
 }
 
 .hint {

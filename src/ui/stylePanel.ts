@@ -25,6 +25,7 @@ import { store } from '../state/store';
 import { BgType, Background, Project, TextTrack, TextStyle, getActiveTrack, getActiveTextTrack } from '../types';
 import { invalidateBgImageCache } from '../lib/render';
 import { getRenderer, RENDERER_LIST } from '../lib/text_renderers/registry';
+import { SCROLLER_PREVIEW_SEC_VALUES } from '../lib/text_renderers/scroller';
 import { RenderSettingSpec } from '../lib/text_renderers/types';
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -300,6 +301,23 @@ export function createStylePanel(): { root: HTMLElement } {
       });
       return { root: lab, set: () => {} };
     }
+    // Scroller previewSec → a dropdown of KaraFun's fixed slider values.
+    if (rendererId === 'scroller' && spec.key === 'previewSec') {
+      const f = selectField(
+        spec.label,
+        SCROLLER_PREVIEW_SEC_VALUES.map((v) => [String(v), String(v)] as [string, string]),
+        String(read()),
+        (v) => store.mutate((pr) => setSetting(getActiveTrack(pr), rendererId, spec.key, parseFloat(v))),
+      );
+      trackFields.push({
+        get: (_st, t) => {
+          const v = t.rendererSettings?.[rendererId]?.[spec.key];
+          return v !== undefined ? String(v) : String(spec.default);
+        },
+        field: f as Field<unknown>,
+      });
+      return f as Field<unknown>;
+    }
     // number → slider
     const min = spec.min ?? 0;
     const max = spec.max ?? 100;
@@ -429,23 +447,29 @@ export function createStylePanel(): { root: HTMLElement } {
     trackHost.innerHTML = '';
     const header = el('div', { className: 'card' });
     header.appendChild(el('h2', { text: track.type === 'audio' ? 'Аудиодорожка' : 'Текстовая дорожка' }));
-    const nameLab = el('label', { className: 'field' });
-    nameLab.appendChild(el('span', { text: 'Название дорожки' }));
-    const nameInput = el('input') as HTMLInputElement;
-    nameInput.type = 'text';
-    nameInput.value = track.name;
-    nameInput.addEventListener('input', () => store.mutate((p) => (getActiveTrack(p).name = nameInput.value)));
-    nameLab.appendChild(nameInput);
-    trackFields.push({
-      get: (_st, t) => t.name,
-      field: {
-        root: nameLab,
-        set: (v) => {
-          if (document.activeElement !== nameInput && nameInput.value !== v) nameInput.value = String(v);
+    // Name field — only for text tracks (audio roles can't be renamed).
+    if (track.type === 'text') {
+      const nameLab = el('label', { className: 'field' });
+      nameLab.appendChild(el('span', { text: 'Название дорожки' }));
+      const nameInput = el('input') as HTMLInputElement;
+      nameInput.type = 'text';
+      nameInput.value = track.name;
+      nameInput.addEventListener('input', () => store.mutate((p) => (getActiveTrack(p).name = nameInput.value)));
+      nameLab.appendChild(nameInput);
+      trackFields.push({
+        get: (_st, t) => t.name,
+        field: {
+          root: nameLab,
+          set: (v) => {
+            if (document.activeElement !== nameInput && nameInput.value !== v) nameInput.value = String(v);
+          },
         },
-      },
-    });
-    header.appendChild(nameLab);
+      });
+      header.appendChild(nameLab);
+    } else {
+      // For audio tracks, show the role name as a static label.
+      header.appendChild(el('div', { className: 'hint', text: `Роль: ${track.name}` }));
+    }
     trackHost.appendChild(header);
 
     // Text-specific cards only when a text track is active. Audio tracks have

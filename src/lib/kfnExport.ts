@@ -13,8 +13,9 @@
  * against real .kfn sample files.
  */
 import { Project, TextTrack } from '../types';
-import { getTextTracks } from '../types';
+import { getTextTracks, getAudioTrackByRole, AudioRole } from '../types';
 import { ExportCanceledError } from './exportErrors';
+import { previewSecToTrajectory } from './text_renderers/scroller';
 
 /** Max outline thickness KaraFun Studio supports (Frame0..Frame5). */
 const KFN_MAX_FRAME = 5;
@@ -34,6 +35,11 @@ export function collectKfnWarnings(project: Project): string[] {
       `В проекте ${textTracks.length} текстовых дорожек, а KaraFun поддерживает максимум 2 текстовых эффекта. ` +
         `Лишние дорожки экспортированы, но KaraFun может их не показать.`,
     );
+  }
+  // KFN export needs at least the minus (instrumental) audio; warn if empty.
+  const minus = getAudioTrackByRole(project, 'minus');
+  if (!minus || !minus.audioFileName) {
+    warnings.push('Дорожка «минус» пуста — экспорт KaraFun будет без инструментала (Source).');
   }
   for (const track of textTracks) {
     if (track.style.layout !== 'scroller' && track.style.layout !== 'classic') {
@@ -243,13 +249,17 @@ function buildEffectSection(track: TextTrack, effIndex: number, textTrackIndex: 
   // exported file looks right when opened in KaraFun Studio.
   const KFN_SCROLLER_OFFSETZ = 30;
   const classic = track.rendererSettings?.classic;
+  const scroller = track.rendererSettings?.scroller;
   if (track.style.layout === 'classic' && classic) {
     out.push('LineCount=' + (classic.lineSlots ?? 4));
     out.push('OffsetX=' + (classic.offsetX ?? 0));
     out.push('OffsetY=' + (classic.offsetY ?? 0));
     // Classic (fixed-slot) tracks have no OffsetZ in KaraFun files.
   } else if (track.style.layout === 'scroller') {
-    out.push('Trajectory=PlainBottomToTop*1.000000*1.000000*1.000000*1.000000');
+    // Trajectory param = 10 / previewSec (inverse: more preview → smaller param).
+    const previewSec = typeof scroller?.previewSec === 'number' ? scroller.previewSec : 10;
+    const param = previewSecToTrajectory(previewSec).toFixed(6);
+    out.push(`Trajectory=PlainBottomToTop*${param}*1.000000*1.000000*1.000000`);
     out.push('OffsetX=0');
     out.push('OffsetY=0');
     out.push(`OffsetZ=${KFN_SCROLLER_OFFSETZ}`);
@@ -283,16 +293,16 @@ function buildEffectSection(track: TextTrack, effIndex: number, textTrackIndex: 
  * still written as additional effects, at the user's own risk).
  */
 function buildSongIni(
-  project: Project,
   tracks: TextTrack[],
   audioFileName: string,
   bgImageFileName: string | null,
+  backAudioFileName: string | null,
 ): { ini: string; warnings: string[] } {
   const warnings: string[] = [];
   const lines: string[] = [];
 
   // [General] section
-  const title = (project.audioFileName?.replace(/\.[^.]+$/, '') || 'Karaoke').replace(/[_]/g, ' ');
+  const title = (audioFileName.replace(/\.[^.]+$/, '') || 'Karaoke').replace(/[_]/g, ' ');
   lines.push('[General]');
   lines.push(`Title=${title}`);
   lines.push('Artist=');
@@ -321,9 +331,11 @@ function buildSongIni(
   for (let i = 0; i <= 8; i++) lines.push(`Mark${i}=-1`);
   lines.push('');
 
-  // [MP3Music]
+  // [MP3Music] — additional audio tracks. KaraFun stores the backing-vocal track
+  // here as Track0 (type 2 = back vocal). Format: <file>,<type>,<offset>,,.
   lines.push('[MP3Music]');
-  lines.push('NumTracks=0');
+  lines.push(`NumTracks=${backAudioFileName ? 1 : 0}`);
+  if (backAudioFileName) lines.push(`Track0=${backAudioFileName},2,0,,`);
   lines.push('');
 
   // Background image effect (ID=51) goes FIRST, matching KaraFun's file order.
@@ -429,19 +441,24 @@ export interface KfnExportOptions {
  */
 export async function exportToKfn(
   project: Project,
-  audioData: Uint8Array,
+  audioByRole: Map<AudioRole, Uint8Array>,
   options?: KfnExportOptions,
 ): Promise<KfnExportResult> {
   const signal = options?.signal;
   const onProgress = options?.onProgress;
   const report = (f: number): void => onProgress?.(Math.max(0, Math.min(1, f)));
-  // Yield to the event loop so the UI can paint between phases.
   const yield_ = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
   const checkAbort = (): void => {
     if (signal?.aborted) throw new ExportCanceledError('Экспорт отменён');
   };
 
-  const audioFileName = project.audioFileName || 'song.mp3';
+  // Audio roles: minus → [General] Source (type 2), back → [MP3Music] Track0 (type 2).
+  const minusTrack = getAudioTrackByRole(project, 'minus');
+  const backTrack = getAudioTrackByRole(project, 'back');
+  const minusBytes = minusTrack?.audioFileName ? audioByRole.get('minus') : undefined;
+  const backBytes = backTrack?.audioFileName ? audioByRole.get('back') : undefined;
+  const audioFileName = minusTrack?.audioFileName || 'song.mp3';
+  const backAudioFileName = backBytes && backTrack?.audioFileName ? backTrack.audioFileName : null;
   const title = audioFileName.replace(/\.[^.]+$/, '').replace(/[_]/g, ' ');
   const source = `1,I,${audioFileName}`;
 
@@ -449,22 +466,28 @@ export async function exportToKfn(
   if (textTracks.length === 0) {
     throw new Error('В проекте нет текстовых дорожек для экспорта');
   }
+  if (!minusBytes) {
+    throw new Error('Дорожка «минус» пуста — нечего экспортировать в KaraFun');
+  }
   report(0.02);
 
-  // Phase 1: build Song.ini (with all warnings collected along the way).
+  // Phase 1: build Song.ini.
   checkAbort();
   let bgImageFileName: string | null = null;
   if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
     bgImageFileName = 'background.' + (project.background.bgImageDataUrl.match(/data:image\/([a-z0-9]+);/i)?.[1] ?? 'jpg');
   }
-  const { ini: songIni, warnings } = buildSongIni(project, textTracks, audioFileName, bgImageFileName);
+  const { ini: songIni, warnings } = buildSongIni(textTracks, audioFileName, bgImageFileName, backAudioFileName);
   const songIniBytes = new TextEncoder().encode(songIni);
   report(0.1);
   await yield_();
 
-  // Phase 2: decode the background image (if any) into raw bytes.
+  // Phase 2: collect container entries — audio (minus + optional back), bg, Song.ini.
   checkAbort();
-  const entries: DirEntry[] = [{ filename: audioFileName, fileType: 2, data: audioData }];
+  const entries: DirEntry[] = [{ filename: audioFileName, fileType: 2, data: minusBytes }];
+  if (backBytes && backAudioFileName) {
+    entries.push({ filename: backAudioFileName, fileType: 2, data: backBytes });
+  }
   if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
     const decoded = decodeDataUrl(project.background.bgImageDataUrl);
     if (decoded) entries.push({ filename: decoded.filename, fileType: 3, data: decoded.bytes });

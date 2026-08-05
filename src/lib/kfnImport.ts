@@ -15,11 +15,12 @@
  * Timings within one effect are a flat sequence (Sync0..SyncN chunks), but they
  * are LOCAL to that effect — each effect has its own independent Sync array.
  */
-import { Line, Syllable, TextStyle, TextTrack, Track, newTrackId, RendererSettings, Background, createBackground, createAudioTrack } from '../types';
+import { Line, Syllable, TextStyle, TextTrack, Track, newTrackId, RendererSettings, Background, createBackground, AudioRole } from '../types';
+import { trajectoryToPreviewSec } from './text_renderers/scroller';
 
 export interface KfnImportResult {
-  project: { tracks: Track[]; audioFileName: string; background: Background };
-  audioBytes: Uint8Array;
+  project: { tracks: Track[]; background: Background };
+  audioByRole: Map<AudioRole, Uint8Array>;
 }
 
 interface KfnEntry {
@@ -32,8 +33,8 @@ interface KfnEntry {
   absOffset: number;
 }
 
-/** Parse the KFN binary into directory entries, Song.ini text and audio bytes. */
-function parseKfn(data: Uint8Array): { entries: KfnEntry[]; songIni: string; audioBytes: Uint8Array; audioName: string } {
+/** Parse the KFN binary into directory entries + Song.ini text. */
+function parseKfn(data: Uint8Array): { entries: KfnEntry[]; songIni: string } {
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const dec = new TextDecoder();
 
@@ -66,22 +67,12 @@ function parseKfn(data: Uint8Array): { entries: KfnEntry[]; songIni: string; aud
   }
   const dirEnd = pos;
 
-  // Compute absolute offsets (relative to dirEnd) and extract data.
-  const entries = rawEntries.map((e) => ({
-    ...e,
-    absOffset: dirEnd + e.offset,
-  }));
+  const entries = rawEntries.map((e) => ({ ...e, absOffset: dirEnd + e.offset }));
 
-  // Find Song.ini (type 1) and audio (type 2).
   const songEntry = entries.find((e) => e.type === 1 || e.name.toLowerCase().endsWith('.ini'));
-  const audioEntry = entries.find((e) => e.type === 2 || /\.(mp3|ogg|wav)$/i.test(e.name));
   if (!songEntry) throw new Error('Song.ini не найден в KFN');
-  if (!audioEntry) throw new Error('Аудиофайл не найден в KFN');
-
   const songIni = dec.decode(data.slice(songEntry.absOffset, songEntry.absOffset + songEntry.inLen));
-  const audioBytes = data.slice(audioEntry.absOffset, audioEntry.absOffset + audioEntry.inLen);
-
-  return { entries, songIni, audioBytes, audioName: audioEntry.name };
+  return { entries, songIni };
 }
 
 /** One [EffN] section parsed into a flat key→value map. */
@@ -298,11 +289,14 @@ function applyFont(style: TextStyle, fontField: string | undefined): void {
  * slots), using LineCount → lineSlots and OffsetX/OffsetY → offset.
  */
 function applyLayout(style: TextStyle, fields: Map<string, string>): RendererSettings {
-  const traj = (fields.get('Trajectory') ?? '').toLowerCase();
+  const traj = (fields.get('Trajectory') ?? '');
+  const trajLc = traj.toLowerCase();
   const settings: RendererSettings = {};
-  if (traj.includes('bottomtotop') || traj.includes('plain')) {
+  if (trajLc.includes('bottomtotop') || trajLc.includes('plain')) {
     style.layout = 'scroller';
-    settings.scroller = { visibleLines: 8 };
+    // Trajectory = PlainBottomToTop*<param>*… where param = 10 / previewSec.
+    const param = parseFloat(traj.split('*')[1] ?? '1') || 1;
+    settings.scroller = { previewSec: trajectoryToPreviewSec(param) };
     return settings;
   }
   // No scroll trajectory → classic fixed-slot karaoke.
@@ -344,24 +338,53 @@ function effectToTrack(effect: EffectFields, index: number): TextTrack {
 }
 
 /**
- * Import a .kfn file: extract audio bytes and parse lyrics/timings into one or
- * more independent text tracks (one per text effect, ID=1 or 2). Returns the
- * tracks and raw audio bytes.
+ * Import a .kfn file: extract audio + lyrics/timings. Text effects (ID=1/2)
+ * become text tracks. The main audio (`[General] Source`, instrumental) becomes
+ * the 'minus' role; a `[MP3Music] Track0` (backing vocals) becomes the 'back'
+ * role. Returns the project's tracks + per-role raw audio bytes.
  */
 export function importFromKfn(data: Uint8Array): KfnImportResult {
   const parsed = parseKfn(data);
-  const effects = parseEffects(parsed.songIni);
+  const { entries, songIni } = parsed;
+  const effects = parseEffects(songIni);
   const textTracks = effects
     .map((eff, i) => effectToTrack(eff, i))
-    // Drop tracks with no syllables at all (empty placeholder effects).
     .filter((t) => t.lines.some((l) => l.syllables.length > 0));
   if (textTracks.length === 0) throw new Error('В KFN не найдено текстовых дорожек');
-  // The embedded audio becomes an audio track (holds automation; bytes stay out).
-  const tracks: Track[] = [...textTracks, createAudioTrack('минус', parsed.audioName)];
-  // Background image (optional): extracted from an ID=51 effect + container file.
-  const background = extractBackground(parsed.songIni, parsed.entries, data) ?? createBackground();
+
+  // Parse [General] Source (instrumental → minus) and [MP3Music] Track0 (→ back).
+  const sourceName = (songIni.match(/^Source=1,I,(.+)$/m)?.[1] ?? '').trim();
+  const track0Name = (songIni.match(/^Track0=([^,]+)/m)?.[1] ?? '').trim();
+  const audioByRole = new Map<AudioRole, Uint8Array>();
+  if (sourceName) {
+    const entry = entries.find((e) => e.name === sourceName);
+    if (entry) audioByRole.set('minus', data.slice(entry.absOffset, entry.absOffset + entry.inLen));
+  }
+  if (track0Name) {
+    const entry = entries.find((e) => e.name === track0Name);
+    if (entry) audioByRole.set('back', data.slice(entry.absOffset, entry.absOffset + entry.inLen));
+  }
+
+  // Build the three fixed audio-role tracks; fill filenames from what was found.
+  const audioTracks: Track[] = [
+    makeAudio('original'),
+    makeAudio('minus', audioByRole.has('minus') ? sourceName : ''),
+    makeAudio('back', audioByRole.has('back') ? track0Name : ''),
+  ];
+
+  const tracks: Track[] = [...textTracks, ...audioTracks];
+  const background = extractBackground(songIni, entries, data) ?? createBackground();
+  return { project: { tracks, background }, audioByRole };
+}
+
+/** Helper: build an audio track for a role (empty audioFileName = no audio). */
+function makeAudio(role: AudioRole, audioFileName = ''): Track {
   return {
-    project: { tracks, audioFileName: parsed.audioName, background },
-    audioBytes: parsed.audioBytes,
+    id: newTrackId(),
+    name: role === 'original' ? 'Оригинал' : role === 'minus' ? 'Минус' : 'Бэк',
+    type: 'audio',
+    role,
+    audioFileName,
+    volumeAutomation: [],
   };
 }
