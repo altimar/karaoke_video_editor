@@ -16,9 +16,11 @@ import { QUALITY_PRESETS, DEFAULT_QUALITY_ID } from '../lib/export';
 import { ExportCanceledError } from '../lib/exportErrors';
 
 export interface ExportChoice {
-  format: 'mp4' | 'kfn';
+  format: 'mp4' | 'project' | 'kfn';
   /** MP4 quality preset id (only meaningful when format is 'mp4'). */
   qualityId: string;
+  /** MP4 frame rate (only meaningful when format is 'mp4'). */
+  fps: number;
 }
 
 export interface ExportDialog {
@@ -35,8 +37,9 @@ export interface ExportDialog {
 /**
  * Open the export dialog. `kfnWarnings` are shown in the KaraFun tab so the user
  * sees compatibility issues (too many tracks, clamped stroke, …) before export.
+ * `initialFps` preselects the FPS dropdown in the Video tab.
  */
-export function openExportDialog(kfnWarnings: string[]): ExportDialog {
+export function openExportDialog(kfnWarnings: string[], initialFps: number): ExportDialog {
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
 
@@ -63,10 +66,14 @@ export function openExportDialog(kfnWarnings: string[]): ExportDialog {
   const mp4Tab = document.createElement('button');
   mp4Tab.className = 'export-tab active';
   mp4Tab.textContent = 'Видео (MP4)';
+  const projectTab = document.createElement('button');
+  projectTab.className = 'export-tab';
+  projectTab.textContent = 'Проект (.karaokeproject)';
   const kfnTab = document.createElement('button');
   kfnTab.className = 'export-tab';
   kfnTab.textContent = 'KaraFun (.kfn)';
   tabBar.appendChild(mp4Tab);
+  tabBar.appendChild(projectTab);
   tabBar.appendChild(kfnTab);
   modal.appendChild(tabBar);
 
@@ -91,11 +98,49 @@ export function openExportDialog(kfnWarnings: string[]): ExportDialog {
   }
   field.appendChild(qualitySelect);
   mp4Body.appendChild(field);
+
+  // FPS selector.
+  const fpsField = document.createElement('label');
+  fpsField.className = 'field';
+  const fpsLabel = document.createElement('span');
+  fpsLabel.textContent = 'Кадры в секунду';
+  fpsField.appendChild(fpsLabel);
+  const fpsSelect = document.createElement('select');
+  const FPS_OPTIONS = [24, 30, 60];
+  for (const v of FPS_OPTIONS) {
+    const opt = document.createElement('option');
+    opt.value = String(v);
+    opt.textContent = String(v);
+    if (v === initialFps) opt.selected = true;
+    fpsSelect.appendChild(opt);
+  }
+  // If the project's fps isn't one of the standard values, add it as an extra
+  // option so the current value is still represented rather than silently lost.
+  if (!FPS_OPTIONS.includes(initialFps)) {
+    const opt = document.createElement('option');
+    opt.value = String(initialFps);
+    opt.textContent = String(initialFps);
+    opt.selected = true;
+    fpsSelect.appendChild(opt);
+  }
+  fpsField.appendChild(fpsSelect);
+  mp4Body.appendChild(fpsField);
+
   const mp4Hint = document.createElement('div');
   mp4Hint.className = 'hint';
   mp4Hint.textContent = 'Чем выше качество — тем больше файл и дольше рендер.';
   mp4Body.appendChild(mp4Hint);
   body.appendChild(mp4Body);
+
+  // Project body: save the editable project file (no rendering options).
+  const projectBody = document.createElement('div');
+  projectBody.hidden = true;
+  const projectHint = document.createElement('div');
+  projectHint.className = 'hint';
+  projectHint.textContent =
+    'Сохраняет проект, аудио и фон в файл .karaokeproject для последующего открытия в редакторе.';
+  projectBody.appendChild(projectHint);
+  body.appendChild(projectBody);
 
   // KFN body: warnings (if any) + format hint.
   const kfnBody = document.createElement('div');
@@ -167,14 +212,16 @@ export function openExportDialog(kfnWarnings: string[]): ExportDialog {
 
   let closed = false;
   let rendering = false;
-  let format: 'mp4' | 'kfn' = 'mp4';
+  let format: 'mp4' | 'project' | 'kfn' = 'mp4';
 
-  const switchTab = (which: 'mp4' | 'kfn'): void => {
+  const switchTab = (which: 'mp4' | 'project' | 'kfn'): void => {
     if (rendering) return;
     format = which;
     mp4Tab.classList.toggle('active', which === 'mp4');
+    projectTab.classList.toggle('active', which === 'project');
     kfnTab.classList.toggle('active', which === 'kfn');
     mp4Body.hidden = which !== 'mp4';
+    projectBody.hidden = which !== 'project';
     kfnBody.hidden = which !== 'kfn';
   };
 
@@ -196,16 +243,20 @@ export function openExportDialog(kfnWarnings: string[]): ExportDialog {
     rendering = true;
     // Lock into rendering state.
     mp4Tab.disabled = true;
+    projectTab.disabled = true;
     kfnTab.disabled = true;
     qualitySelect.disabled = true;
+    fpsSelect.disabled = true;
     tabBar.style.opacity = '0.5';
     mp4Body.hidden = true;
+    projectBody.hidden = true;
     kfnBody.hidden = true;
     startBtn.hidden = true;
     progressWrap.hidden = false;
     cancelBtn.textContent = 'Отменить';
-    title.textContent = format === 'mp4' ? 'Рендеринг видео…' : 'Сборка KaraFun…';
-    if (resolveChoice) resolveChoice({ format, qualityId: qualitySelect.value });
+    title.textContent =
+      format === 'mp4' ? 'Рендеринг видео…' : format === 'kfn' ? 'Сборка KaraFun…' : 'Сохранение проекта…';
+    if (resolveChoice) resolveChoice({ format, qualityId: qualitySelect.value, fps: parseInt(fpsSelect.value, 10) });
   };
 
   const setProgress = (fraction: number): void => {
@@ -223,6 +274,7 @@ export function openExportDialog(kfnWarnings: string[]): ExportDialog {
   };
 
   mp4Tab.addEventListener('click', () => switchTab('mp4'));
+  projectTab.addEventListener('click', () => switchTab('project'));
   kfnTab.addEventListener('click', () => switchTab('kfn'));
   startBtn.addEventListener('click', start);
   cancelBtn.addEventListener('click', cancel);

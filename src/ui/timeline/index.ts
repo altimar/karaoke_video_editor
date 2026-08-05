@@ -33,8 +33,32 @@ export function createTimeline(): { root: HTMLElement } {
 
   const head = document.createElement('div');
   head.className = 'timeline-head';
-  head.innerHTML =
-    '<span>Таймлайн</span><span class="hint">— клик = перемотка, перетаскивайте маркеры, Shift+колесо = зум</span>';
+  const headTitle = document.createElement('span');
+  headTitle.textContent = 'Таймлайн';
+  head.appendChild(headTitle);
+  const headHint = document.createElement('span');
+  headHint.className = 'hint';
+  headHint.textContent = '— клик = перемотка, перетаскивайте маркеры';
+  head.appendChild(headHint);
+
+  // Zoom controls (always visible; on desktop Shift+wheel still works too).
+  const zoomControls = document.createElement('div');
+  zoomControls.className = 'tl-zoom-controls';
+  const zoomOutBtn = document.createElement('button');
+  zoomOutBtn.className = 'tl-zoom-btn';
+  zoomOutBtn.textContent = '➖';
+  zoomOutBtn.title = 'Уменьшить';
+  const zoomLabel = document.createElement('span');
+  zoomLabel.className = 'tl-zoom-label';
+  zoomLabel.textContent = '100%';
+  const zoomInBtn = document.createElement('button');
+  zoomInBtn.className = 'tl-zoom-btn';
+  zoomInBtn.textContent = '➕';
+  zoomInBtn.title = 'Увеличить';
+  zoomControls.appendChild(zoomOutBtn);
+  zoomControls.appendChild(zoomLabel);
+  zoomControls.appendChild(zoomInBtn);
+  head.appendChild(zoomControls);
   root.appendChild(head);
 
   // Body: fixed gutter (left) + scrollable canvas (right).
@@ -73,8 +97,37 @@ export function createTimeline(): { root: HTMLElement } {
   const msToX = (ms: number) => (ms / durationMs()) * contentWidth();
   const xToMs = (x: number) => (x / contentWidth()) * durationMs();
 
+  /** Reflect the current zoom level in the header label (e.g. "230%"). */
+  function updateZoomLabel(): void {
+    zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+  }
+
+  /**
+   * Apply a zoom factor anchored at a given time (ms), keeping that time under the
+   * same screen X after the zoom by adjusting scrollLeft. Shared by the zoom
+   * buttons, pinch and Shift+wheel. `factor` >1 zooms in, <1 zooms out.
+   */
+  function zoomAt(anchorMs: number, factor: number): void {
+    const anchorX = msToX(anchorMs);
+    zoom = Math.max(1, Math.min(40, zoom * factor));
+    const newAnchorX = msToX(anchorMs);
+    scroll.scrollLeft += newAnchorX - anchorX;
+    updateZoomLabel();
+    draw();
+  }
+
+  /** Zoom centered on the middle of the currently visible timeline span. */
+  function zoomCentered(factor: number): void {
+    const centerMs = xToMs(scroll.scrollLeft + scroll.clientWidth / 2);
+    zoomAt(centerMs, factor);
+  }
+  zoomInBtn.addEventListener('click', () => zoomCentered(1.15));
+  zoomOutBtn.addEventListener('click', () => zoomCentered(1 / 1.15));
+
   // The active drag (claimed by some track view's hitTest), carried across moves.
   let drag: TrackDrag | null = null;
+  // True while a 2-finger pinch is active; pointermove ignores drags during it.
+  let isPinching = false;
 
   // --- Pointer dispatch ---
   // Single pipeline: for each row, ask its view to hitTest; the first claim
@@ -148,7 +201,7 @@ export function createTimeline(): { root: HTMLElement } {
   });
 
   canvas.addEventListener('pointermove', (e) => {
-    if (!drag) return;
+    if (!drag || isPinching) return;
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -178,15 +231,66 @@ export function createTimeline(): { root: HTMLElement } {
       if (!e.shiftKey) return;
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      const anchorX = e.clientX - rect.left;
-      const anchorMs = xToMs(anchorX);
-      zoom = Math.max(1, Math.min(40, zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
-      const newAnchorX = msToX(anchorMs);
-      scroll.scrollLeft += newAnchorX - anchorX;
-      draw();
+      const anchorMs = xToMs(e.clientX - rect.left);
+      zoomAt(anchorMs, e.deltaY < 0 ? 1.15 : 1 / 1.15);
     },
     { passive: false },
   );
+
+  // --- Pinch-to-zoom (two-finger) on the timeline, for touch devices. ---
+  // One finger still drags markers / pans (via pointer events above + the
+  // scroll container's native pan-x). Two fingers zoom, anchored at the midpoint
+  // between them — like a map. We track the gesture across touchstart/move/end.
+  let pinchStartDist = 0;
+  let pinchStartZoom = 1;
+  /** Distance between the two touches, in canvas-local X coords (timeline only
+   *  cares about the horizontal axis). */
+  const pinchDistance = (t: TouchList): number => {
+    const rect = canvas.getBoundingClientRect();
+    const x1 = t[0].clientX - rect.left;
+    const x2 = t[1].clientX - rect.left;
+    return Math.abs(x2 - x1);
+  };
+
+  scroll.addEventListener(
+    'touchstart',
+    (e) => {
+      if (e.touches.length !== 2) return;
+      // Cancel any in-progress marker drag so the pinch owns the gesture.
+      if (drag) {
+        drag = null;
+      }
+      isPinching = true;
+      pinchStartDist = pinchDistance(e.touches) || 1;
+      pinchStartZoom = zoom;
+    },
+    { passive: true },
+  );
+
+  scroll.addEventListener(
+    'touchmove',
+    (e) => {
+      if (!isPinching || e.touches.length !== 2) return;
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      // Anchor at the midpoint between the two fingers (in ms).
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+      const anchorMs = xToMs(midX);
+      const factor = pinchDistance(e.touches) / pinchStartDist;
+      // Reset to the gesture's start zoom, then apply the accumulated factor
+      // through zoomAt so the anchor stays put.
+      zoom = pinchStartZoom;
+      zoomAt(anchorMs, factor);
+    },
+    { passive: false },
+  );
+
+  const endPinch = (): void => {
+    if (!isPinching) return;
+    isPinching = false;
+  };
+  scroll.addEventListener('touchend', endPinch);
+  scroll.addEventListener('touchcancel', endPinch);
 
   audioEngine.onTime((t) => {
     playheadMs = t;

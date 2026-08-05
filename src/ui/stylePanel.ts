@@ -4,8 +4,8 @@
  * Settings are split into two groups:
  *  - PER-TRACK (font, colors, stroke/glow, layout + renderer settings): these
  *    belong to the ACTIVE track and are rebuilt when the active track changes.
- *  - PROJECT-LEVEL (background, resolution, FPS, waveform): shared across all
- *    tracks, rebuilt only when their own condition (bg type) flips.
+ *  - PROJECT-LEVEL (background): shared across all tracks, rebuilt only when
+ *    its own condition (bg type) flips.
  *
  * IMPORTANT: each card is built ONCE, and individual controls are updated in
  * place when the store changes (via setter callbacks). We must NOT rebuild the
@@ -244,12 +244,11 @@ export function createStylePanel(): { root: HTMLElement } {
   // switch; project-level cards (bg, layout/export) are stable.
   const trackHost = el('div');
   const bgCardEl = el('div', { className: 'card' });
-  const layoutCardEl = el('div', { className: 'card' });
 
   // Per-track field references. Re-collected each time the active track changes.
   let trackFields: Array<{ get: (s: TextStyle, t: TextTrack) => string | number | boolean; field: Field<unknown> }> = [];
-  // Project-level field references (resolution/fps/waveform + bg). Stable across
-  // track switches; cleared & repopulated only when their own card rebuilds.
+  // Project-level field references (bg colors). Stable across track switches;
+  // cleared & repopulated only when the bg card rebuilds.
   const projFields: Array<{ get: (p: Project) => string | number | boolean; field: Field<unknown> }> = [];
 
   // Track the last-seen condition values for conditional blocks, so we only
@@ -523,31 +522,11 @@ export function createStylePanel(): { root: HTMLElement } {
     }
   }
 
-  function buildProjectLayout(project: Project): void {
-    layoutCardEl.innerHTML = '';
-    layoutCardEl.appendChild(el('h2', { text: 'Проект и экспорт' }));
-
-    const res = selectField('Разрешение', [['1920x1080', '1920×1080 (Full HD)'], ['1280x720', '1280×720 (HD)']], `${project.width}x${project.height}`, (v) => {
-      const [w, h] = v.split('x').map((n) => parseInt(n, 10));
-      store.mutate((pr) => {
-        pr.width = w;
-        pr.height = h;
-      });
-    });
-    projFields.push({ get: (pr) => `${pr.width}x${pr.height}`, field: res as Field<unknown> });
-    layoutCardEl.appendChild(res.root);
-
-    const fps = numberField('FPS', project.fps, 15, 60, 1, (v) => store.mutate((pr) => (pr.fps = Math.round(v))));
-    projFields.push({ get: (pr) => pr.fps, field: fps as Field<unknown> });
-    layoutCardEl.appendChild(fps.root);
-  }
-
   function rebuildProjectCards(): void {
     const project = store.getProject();
     projFields.length = 0;
     buildBg(project.background);
     lastBgType = project.background.bgType;
-    buildProjectLayout(project);
   }
 
   function syncFromStore(): void {
@@ -574,14 +553,13 @@ export function createStylePanel(): { root: HTMLElement } {
       lastBgType = project.background.bgType;
     }
 
-    // Project-level fields (bg colors, resolution, fps).
+    // Project-level fields (bg colors).
     for (const { get, field } of projFields) field.set(get(project));
   }
 
   // Initial build.
   root.appendChild(trackHost);
   root.appendChild(bgCardEl);
-  root.appendChild(layoutCardEl);
   rebuildTrackCards();
   rebuildProjectCards();
 

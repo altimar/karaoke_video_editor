@@ -10,6 +10,8 @@ import { store } from '../state/store';
 import { audioEngine } from '../lib/audioEngine';
 import { renderFrame } from '../lib/render';
 import { timingCapture } from '../lib/timing';
+import { flatSyllables } from '../lib/textParser';
+import { getActiveTextTrack } from '../types';
 
 export function createPreview(): { wrap: HTMLElement; dispose: () => void } {
   const wrap = document.createElement('div');
@@ -23,6 +25,29 @@ export function createPreview(): { wrap: HTMLElement; dispose: () => void } {
   badge.className = 'preview-badge';
   badge.textContent = 'Превью';
   wrap.appendChild(badge);
+
+  // --- Tap-to-record overlay ---
+  // While recording, the whole preview becomes a tap target: tapping anywhere
+  // stamps the current playback time onto the next syllable (mobile path, since
+  // there's no Spacebar). Shows the upcoming syllable large, so the user can
+  // read ahead while tapping.
+  const recOverlay = document.createElement('div');
+  recOverlay.className = 'rec-overlay';
+  const recHint = document.createElement('div');
+  recHint.className = 'rec-overlay-hint';
+  recHint.textContent = 'Тапайте на каждый слог';
+  const recSyl = document.createElement('div');
+  recSyl.className = 'rec-overlay-syl';
+  recOverlay.appendChild(recHint);
+  recOverlay.appendChild(recSyl);
+  wrap.appendChild(recOverlay);
+
+  // Tapping the overlay stamps the next syllable (same as Space on desktop).
+  recOverlay.addEventListener('pointerdown', (e) => {
+    if (!timingCapture.isRecording()) return;
+    e.preventDefault();
+    timingCapture.stampNow();
+  });
 
   let rafId = 0;
 
@@ -56,10 +81,23 @@ export function createPreview(): { wrap: HTMLElement; dispose: () => void } {
     /* live preview re-renders each RAF frame */
   });
 
-  // Recording badge state.
-  timingCapture.onState((recording) => {
+  /** Update the tap-overlay's "next syllable" text from the active track. */
+  function updateRecOverlaySyl(cursor: number): void {
+    const t = getActiveTextTrack(store.getProject());
+    if (!t) {
+      recSyl.textContent = '';
+      return;
+    }
+    const flat = flatSyllables(t.lines);
+    recSyl.textContent = flat[cursor]?.syl.text ?? '✓';
+  }
+
+  // Recording badge + tap-overlay state.
+  timingCapture.onState((recording, cursor) => {
     badge.classList.toggle('rec', recording);
     badge.textContent = recording ? 'Запись таймингов' : 'Превью';
+    wrap.classList.toggle('rec', recording);
+    if (recording) updateRecOverlaySyl(cursor);
   });
 
   // Kick off the loop.

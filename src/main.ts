@@ -8,6 +8,7 @@ import { createLyricsEditor } from './ui/lyricsEditor';
 import { createPreview } from './ui/preview';
 import { createStylePanel } from './ui/stylePanel';
 import { createTimeline } from './ui/timeline';
+import { createPropsSheet } from './ui/propsSheet';
 import { canExport } from './lib/export';
 import { store } from './state/store';
 import { audioEngine } from './lib/audioEngine';
@@ -32,6 +33,13 @@ function main(): void {
   const topbar = createTopbar(toast);
   app.appendChild(topbar.root);
 
+  // Build the column components once. Their root nodes are MOVED between the
+  // desktop columns and the mobile props-sheet as the viewport changes (a DOM
+  // move preserves listeners/state, so the same instances work in both layouts).
+  const lyrics = createLyricsEditor();
+  const style = createStylePanel();
+  const preview = createPreview();
+
   // Main 3-column area
   const main = document.createElement('div');
   main.className = 'main';
@@ -39,26 +47,62 @@ function main(): void {
   // Left: lyrics editor + help
   const left = document.createElement('div');
   left.className = 'col col-left';
-  left.appendChild(createLyricsEditor().root);
+  left.appendChild(lyrics.root);
   left.appendChild(helpCard());
   main.appendChild(left);
 
   // Center: preview + transport time
   const center = document.createElement('div');
   center.className = 'col col-center';
-  center.appendChild(createPreview().wrap);
+  center.appendChild(preview.wrap);
   main.appendChild(center);
 
   // Right: style/effects panel
   const right = document.createElement('div');
   right.className = 'col col-right';
-  right.appendChild(createStylePanel().root);
+  right.appendChild(style.root);
   main.appendChild(right);
 
   app.appendChild(main);
 
   // Timeline at the bottom
   app.appendChild(createTimeline().root);
+
+  // --- Mobile props-sheet + FAB ---
+  // The lyrics & style nodes are stashed in a modal sheet reached via a floating
+  // button; on desktop they live in their columns instead. applyLayout() is the
+  // SOLE owner of where these nodes live — it mounts them into either the
+  // desktop columns or the sheet's panels, so there's no ordering ambiguity.
+  const propsSheet = createPropsSheet();
+  document.body.appendChild(propsSheet.root);
+
+  const fab = document.createElement('button');
+  fab.className = 'props-fab';
+  fab.textContent = '✏️ Свойства';
+  fab.title = 'Свойства активной дорожки';
+  fab.addEventListener('click', () => propsSheet.open());
+  document.body.appendChild(fab);
+
+  /** Move a node into a new parent only if it isn't already there. */
+  function mount(node: HTMLElement, newParent: HTMLElement): void {
+    if (node.parentElement !== newParent) newParent.appendChild(node);
+  }
+
+  function applyLayout(isMobile: boolean): void {
+    if (isMobile) {
+      propsSheet.close();
+      mount(lyrics.root, propsSheet.lyricsPanel);
+      mount(style.root, propsSheet.stylePanel);
+    } else {
+      propsSheet.close();
+      // Lyrics first in the left column (before the help card).
+      if (lyrics.root.parentElement !== left) left.insertBefore(lyrics.root, left.firstChild);
+      mount(style.root, right);
+    }
+  }
+  const mq = window.matchMedia('(max-width: 900px)');
+  applyLayout(mq.matches);
+  mq.addEventListener('change', (e) => applyLayout(e.matches));
 
   // Keep each audio voice's gain in sync with its track's volume automation.
   store.subscribe(() => {
