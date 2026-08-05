@@ -720,6 +720,11 @@ textarea.lyrics {
     overflow-x: auto;
     flex-wrap: nowrap;
   }
+  /* Keep only the icon on topbar buttons (labels hidden); the button stays
+     tappable and shows its action via title. */
+  .topbar-btn-label {
+    display: none;
+  }
   /* Hide the title text, keep only the mic icon (saves space on phones). */
   .topbar-title {
     margin-right: 8px;
@@ -747,12 +752,17 @@ textarea.lyrics {
   .props-fab {
     display: block;
   }
-  /* Sheet becomes a full-screen overlay on phones (tabs alone are useless). */
+  /* Sheet becomes a full-screen overlay on phones (tabs alone are useless).
+     Use 100dvh (dynamic viewport height) so the address bar / system UI on
+     mobile browsers (Samsung, Chrome) doesn't push the tab header off-screen.
+     The vh value is a fallback for older browsers. */
   .props-sheet {
     width: 100vw;
     max-width: 100vw;
     height: 100vh;
+    height: 100dvh;
     max-height: 100vh;
+    max-height: 100dvh;
     border-radius: 0;
   }
   /* Body must scroll and take all remaining height below the tab header. */

@@ -38,14 +38,15 @@ export function createTopbar(toast: ToastFn): {
 
   // --- Play / pause ---
   const playBtn = document.createElement('button');
-  playBtn.textContent = '▶ Пуск';
+  setTopbarButton(playBtn, '▶', 'Пуск');
+  playBtn.title = 'Пуск / пауза';
   playBtn.addEventListener('click', () => audioEngine.toggle());
   root.appendChild(playBtn);
 
   // --- Record timings ---
   const recBtn = document.createElement('button');
   recBtn.className = 'primary';
-  recBtn.textContent = '● Запись таймингов';
+  setTopbarButton(recBtn, '●', 'Запись таймингов');
   recBtn.title = 'Включите воспроизведение и нажимайте Пробел на каждый слог';
   recBtn.addEventListener('click', () => {
     if (timingCapture.isRecording()) {
@@ -67,7 +68,8 @@ export function createTopbar(toast: ToastFn): {
   // One file picker accepts both .karaokeproject and .kfn; the handler tells
   // them apart by extension and routes to the right importer.
   const openBtn = document.createElement('button');
-  openBtn.textContent = '📂 Открыть';
+  setTopbarButton(openBtn, '📂', 'Открыть');
+  openBtn.title = 'Открыть проект (.karaokeproject) или KaraFun (.kfn)';
   const openInput = document.createElement('input');
   openInput.type = 'file';
   openInput.accept = '.karaokeproject,.kfn';
@@ -127,13 +129,14 @@ export function createTopbar(toast: ToastFn): {
   // --- Export (single button → tabbed dialog: Video / Project / KaraFun) ---
   const exportBtn = document.createElement('button');
   exportBtn.className = 'primary';
-  exportBtn.textContent = '⬇ Экспорт';
+  setTopbarButton(exportBtn, '⬇', 'Экспорт');
+  exportBtn.title = 'Экспорт: видео (MP4) / проект / KaraFun (.kfn)';
   exportBtn.addEventListener('click', () => onExport(exportBtn));
   root.appendChild(exportBtn);
 
   function refreshAll(): void {
-    playBtn.textContent = audioEngine.isPlaying ? '⏸ Пауза' : '▶ Пуск';
-    recBtn.textContent = timingCapture.isRecording() ? '⏹ Стоп записи' : '● Запись таймингов';
+    setTopbarButton(playBtn, audioEngine.isPlaying ? '⏸' : '▶', audioEngine.isPlaying ? 'Пауза' : 'Пуск');
+    setTopbarButton(recBtn, timingCapture.isRecording() ? '⏹' : '●', timingCapture.isRecording() ? 'Стоп записи' : 'Запись таймингов');
     recBtn.classList.toggle('danger', timingCapture.isRecording());
     // Recording targets the active TEXT track — disable the button when none is
     // active (so the user must pick a text track first).
@@ -259,6 +262,20 @@ export function createTopbar(toast: ToastFn): {
 
   refreshAll();
   return { root, refreshAudioState };
+}
+
+/**
+ * Build a topbar button's content: icon (plain text) + a labeled span.
+ * The label span is hidden on mobile (CSS `.topbar-btn-label`), so the button
+ * collapses to just its icon there. The icon keeps a trailing space as a
+ * separator on desktop; it collapses (trailing whitespace) when the label is
+ * hidden, so the icon stays snug.
+ */
+function setTopbarButton(btn: HTMLButtonElement, icon: string, label: string): void {
+  const lbl = document.createElement('span');
+  lbl.className = 'topbar-btn-label';
+  lbl.textContent = label;
+  btn.replaceChildren(icon + ' ', lbl);
 }
 
 /** Russian pluralization for "дорожка": 1 → "дорожка", 2-4 → "дорожки", 5+ → "дорожек". */
