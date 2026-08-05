@@ -296,6 +296,11 @@ textarea.lyrics {
   flex-direction: column;
   gap: 6px;
   max-height: 340px;
+  /* Tapping the canvas/tracks shouldn't flash the blue tap highlight or start a
+     text selection — the timeline is a pure interaction surface. */
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
   /* The timeline is the bottom grid row of #app; cap its width so the wide
      zoomed canvas inside can never push the whole layout wider than viewport. */
   min-width: 0;
