@@ -13,7 +13,7 @@ import { importFromKfn } from '../lib/kfnImport';
 import { saveProject, loadProject } from '../lib/projectFile';
 import { getAudioBytesMap, setAudioBytesMap } from '../lib/audioLoader';
 import { openExportDialog } from './exportDialog';
-import { AudioRole, getAudioTrackByRole, getActiveTextTrack } from '../types';
+import { AudioRole, getAudioTrackByRole, getActiveTextTrack, isRoleAudible } from '../types';
 
 export type ToastFn = (msg: string, kind?: 'ok' | 'err' | 'info') => void;
 
@@ -53,7 +53,12 @@ export function createTopbar(toast: ToastFn): {
       timingCapture.stop();
     } else if (!getActiveTextTrack(store.getProject())) {
       toast('Выберите текстовую дорожку для записи таймингов', 'err');
-    } else if (!audioEngine.has('original') && !audioEngine.has('minus') && !audioEngine.has('back')) {
+    } else if (
+      !audioEngine.has('original') &&
+      !audioEngine.has('lead') &&
+      !audioEngine.has('minus') &&
+      !audioEngine.has('back')
+    ) {
       toast('Сначала загрузите аудио', 'err');
     } else {
       // start from beginning if no timings yet
@@ -216,9 +221,12 @@ export function createTopbar(toast: ToastFn): {
           }
           // Apply the FPS chosen in the dialog (exportToMp4 reads project.fps).
           store.mutate((p) => (p.fps = choice.fps));
-          // Gather decoded buffers per role from the engine for the mix.
+          // Gather decoded buffers per audible role (lead/minus/back) for the mix,
+          // respecting mute/solo. 'original' is always excluded from the export.
+          const proj = store.getProject();
           const bufByRole = new Map<AudioRole, AudioBuffer>();
-          for (const role of ['minus', 'back'] as AudioRole[]) {
+          for (const role of ['lead', 'minus', 'back'] as AudioRole[]) {
+            if (!isRoleAudible(proj, role)) continue;
             const buf = audioEngine.getBuffer(role);
             if (buf) bufByRole.set(role, buf);
           }

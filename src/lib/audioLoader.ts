@@ -20,19 +20,32 @@ export function getAudioBytesMap(): Map<AudioRole, Uint8Array> {
   return new Map(bytesByRole);
 }
 
-/** Load a file into a role: decode + store bytes + update the project. */
-export async function loadAudioIntoRole(role: AudioRole, file: File): Promise<void> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  await audioEngine.loadBytes(role, bytes, file.name);
+/**
+ * Load raw audio bytes into a role: decode + store bytes + update the project.
+ * Used by `loadAudioIntoRole` (file picker) and by the separator (synthesised
+ * instrumental bytes that aren't backed by a user-picked File).
+ */
+export async function loadAudioBytesIntoRole(
+  role: AudioRole,
+  bytes: Uint8Array,
+  filename: string,
+): Promise<void> {
+  await audioEngine.loadBytes(role, bytes, filename);
   bytesByRole.set(role, bytes);
   store.mutate((p) => {
     const at = getAudioTrackByRole(p, role);
     if (at) {
-      at.audioFileName = file.name;
+      at.audioFileName = filename;
     }
     // Update duration to the longest loaded voice.
     p.durationMs = audioEngine.durationMs;
   });
+}
+
+/** Load a file into a role: decode + store bytes + update the project. */
+export async function loadAudioIntoRole(role: AudioRole, file: File): Promise<void> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  await loadAudioBytesIntoRole(role, bytes, file.name);
 }
 
 /**

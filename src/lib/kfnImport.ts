@@ -15,7 +15,7 @@
  * Timings within one effect are a flat sequence (Sync0..SyncN chunks), but they
  * are LOCAL to that effect — each effect has its own independent Sync array.
  */
-import { Line, Syllable, TextStyle, TextTrack, Track, newTrackId, RendererSettings, Background, createBackground, AudioRole } from '../types';
+import { Line, Syllable, TextStyle, TextTrack, Track, newTrackId, RendererSettings, Background, createBackground, AudioRole, AUDIO_ROLE_NAMES } from '../types';
 import { trajectoryToPreviewSec } from './text_renderers/scroller';
 
 export interface KfnImportResult {
@@ -365,9 +365,11 @@ export function importFromKfn(data: Uint8Array): KfnImportResult {
     if (entry) audioByRole.set('back', data.slice(entry.absOffset, entry.absOffset + entry.inLen));
   }
 
-  // Build the three fixed audio-role tracks; fill filenames from what was found.
+  // Build the four fixed audio-role tracks; fill filenames from what was found.
+  // KFN has no lead-vocal slot, so 'lead' is always empty after import.
   const audioTracks: Track[] = [
     makeAudio('original'),
+    makeAudio('lead'),
     makeAudio('minus', audioByRole.has('minus') ? sourceName : ''),
     makeAudio('back', audioByRole.has('back') ? track0Name : ''),
   ];
@@ -381,10 +383,12 @@ export function importFromKfn(data: Uint8Array): KfnImportResult {
 function makeAudio(role: AudioRole, audioFileName = ''): Track {
   return {
     id: newTrackId(),
-    name: role === 'original' ? 'Оригинал' : role === 'minus' ? 'Минус' : 'Бэк',
+    name: AUDIO_ROLE_NAMES[role],
     type: 'audio',
     role,
     audioFileName,
     volumeAutomation: [],
+    muted: false,
+    solo: false,
   };
 }

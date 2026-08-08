@@ -198,8 +198,8 @@ assert(imported.audioByRole.get('minus').length === fakeAudio.length, `minus byt
 assert(imported.audioByRole.has('back'), 'back audio imported');
 
 const it = imported.project.tracks;
-// 2 text tracks + 3 audio roles (original empty, minus, back).
-assert(it.length === 5, `5 tracks imported (2 text + 3 audio) (got ${it.length})`);
+// 2 text tracks + 4 audio roles (original empty, lead empty, minus, back).
+assert(it.length === 6, `6 tracks imported (2 text + 4 audio) (got ${it.length})`);
 const minusTrack = it.find((t) => t.type === 'audio' && t.role === 'minus');
 assert(minusTrack && minusTrack.audioFileName === 'test-song.mp3', `minus track keeps filename (got "${minusTrack?.audioFileName}")`);
 const backTrack = it.find((t) => t.type === 'audio' && t.role === 'back');

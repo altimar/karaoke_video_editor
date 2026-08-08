@@ -17,7 +17,7 @@ import {
   AudioBufferSource,
   Quality,
 } from 'mediabunny';
-import { Project, TextTrack, Track, VolumePoint, AudioRole, getAudioTrackByRole } from '../types';
+import { Project, TextTrack, Track, VolumePoint, AudioRole, getAudioTrackByRole, isRoleAudible } from '../types';
 import { renderFrame } from './render';
 
 /**
@@ -241,16 +241,18 @@ export async function exportToMp4(
     }
 
     checkCanceled();
-    // Mix the 'minus' and 'back' roles (each with its own volume automation)
-    // into a single buffer; the 'original' role is excluded from the export.
+    // Mix the audible stems (lead/minus/back) with their volume automation into
+    // a single buffer, respecting each role's mute/solo state. 'original' is
+    // always excluded — the export is a rendered mix, never the reference track.
     const stems: { buffer: AudioBuffer; points: VolumePoint[] }[] = [];
-    for (const role of ['minus', 'back'] as AudioRole[]) {
+    for (const role of ['lead', 'minus', 'back'] as AudioRole[]) {
+      if (!isRoleAudible(project, role)) continue;
       const buf = audioByRole.get(role);
       if (!buf) continue;
       const at = getAudioTrackByRole(project, role);
       stems.push({ buffer: buf, points: at?.volumeAutomation ?? [] });
     }
-    if (stems.length === 0) throw new ExportError('Нет аудио (минус/бэк) для экспорта.');
+    if (stems.length === 0) throw new ExportError('Нет аудио для экспорта (все дорожки заглушены).');
     const finalAudio = await renderMixedAudioWithGain(stems);
     await audioSource.add(finalAudio);
 

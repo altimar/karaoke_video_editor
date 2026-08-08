@@ -66,7 +66,7 @@ function main(): void {
   app.appendChild(main);
 
   // Timeline at the bottom
-  app.appendChild(createTimeline().root);
+  app.appendChild(createTimeline(toast).root);
 
   // --- Mobile props-sheet + FAB ---
   // The lyrics & style nodes are stashed in a modal sheet reached via a floating
@@ -104,11 +104,13 @@ function main(): void {
   applyLayout(mq.matches);
   mq.addEventListener('change', (e) => applyLayout(e.matches));
 
-  // Keep each audio voice's gain in sync with its track's volume automation.
+  // Keep each audio voice's gain in sync with its track's volume automation,
+  // and its mute/solo flags in sync with the model.
   store.subscribe(() => {
     const p = store.getProject();
     for (const at of getAudioTracks(p)) {
       audioEngine.applyVolumeAutomation(at.role, at.volumeAutomation);
+      audioEngine.setMuteSolo(at.role, at.muted, at.solo);
     }
   });
 }

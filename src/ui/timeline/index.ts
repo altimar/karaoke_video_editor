@@ -14,8 +14,16 @@ import { store } from '../../state/store';
 import { audioEngine } from '../../lib/audioEngine';
 import { timingCapture } from '../../lib/timing';
 import { flatSyllables } from '../../lib/textParser';
-import { Project, AudioTrack, createTextTrack } from '../../types';
-import { loadAudioIntoRole, clearAudioRole } from '../../lib/audioLoader';
+import { Project, AudioTrack, createTextTrack, getAudioTrackByRole } from '../../types';
+import {
+  loadAudioIntoRole,
+  loadAudioBytesIntoRole,
+  clearAudioRole,
+  getAudioBytesMap,
+} from '../../lib/audioLoader';
+import { separateVocals, getSeparationStatus } from '../../lib/separation';
+import { openSeparationDialog } from '../separationDialog';
+import type { ToastFn } from '../controls';
 import { RULER_H, TOP_PAD, TRACK_PAD, rowHeight, trackTopForIndex, trackIndexAtY } from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
 import { textView, pickMarker } from './textView';
@@ -27,7 +35,7 @@ const VIEWS: Record<string, TrackView> = {
   audio: audioView as TrackView,
 };
 
-export function createTimeline(): { root: HTMLElement } {
+export function createTimeline(toast: ToastFn): { root: HTMLElement } {
   const root = document.createElement('div');
   root.className = 'timeline';
 
@@ -360,7 +368,9 @@ export function createTimeline(): { root: HTMLElement } {
   function renderGutter(): void {
     const project = store.getProject();
     const sig =
-      project.tracks.map((t) => `${t.id}:${t.type}:${t.name}:${t.type === 'audio' ? t.audioFileName : ''}`).join('|') +
+      project.tracks.map((t) =>
+        `${t.id}:${t.type}:${t.name}:${t.type === 'audio' ? `${t.audioFileName}:${(t as AudioTrack).muted ? 'M' : ''}:${(t as AudioTrack).solo ? 'S' : ''}` : ''}`,
+      ).join('|') +
       '@' + project.activeTrackId;
     if (sig === lastGutterSig) return;
     lastGutterSig = sig;
@@ -402,11 +412,64 @@ export function createTimeline(): { root: HTMLElement } {
       }
       th.appendChild(name);
 
+      // "Extract" action: run Mel-RoFormer on the loaded original and fill the
+      // lead-vocal and instrumental (minus) slots from a single run. Shown on
+      // either empty 'lead' or 'minus' role when an original is loaded. If the
+      // browser can't run the model, the click explains why.
+      if (
+        track.type === 'audio' &&
+        (track.role === 'lead' || track.role === 'minus') &&
+        !track.audioFileName &&
+        getAudioBytesMap().has('original')
+      ) {
+        const extractBtn = document.createElement('span');
+        extractBtn.className = 'timeline-track-extract';
+        extractBtn.textContent = '✨';
+        extractBtn.title = 'Извлечь вокал и минус из оригинала';
+        extractBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          void runSeparation();
+        });
+        th.appendChild(extractBtn);
+      }
+
+      // Mute / Solo buttons (audio roles only). M = gain 0; S = isolate.
+      if (track.type === 'audio') {
+        const at = track as AudioTrack;
+        const muteBtn = document.createElement('span');
+        muteBtn.className = 'timeline-track-ms mute' + (at.muted ? ' active' : '');
+        muteBtn.textContent = 'M';
+        muteBtn.title = at.muted ? 'Включить звук' : 'Заглушить';
+        muteBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          store.mutate((p) => {
+            const t = p.tracks.find((x) => x.id === at.id);
+            if (t && t.type === 'audio') t.muted = !t.muted;
+          });
+        });
+        th.appendChild(muteBtn);
+
+        const soloBtn = document.createElement('span');
+        soloBtn.className = 'timeline-track-ms solo' + (at.solo ? ' active' : '');
+        soloBtn.textContent = 'S';
+        soloBtn.title = at.solo ? 'Снять соль' : 'Соль';
+        soloBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          store.mutate((p) => {
+            const t = p.tracks.find((x) => x.id === at.id);
+            if (t && t.type === 'audio') t.solo = !t.solo;
+          });
+        });
+        th.appendChild(soloBtn);
+      }
+
       // Click on the header body: activate the track; for an empty audio role,
       // also open the load-audio dialog.
       th.addEventListener('click', (e) => {
-        // Let the delete button handle its own click.
+        // Let inner buttons (extract / mute / solo / delete) handle their own clicks.
         if ((e.target as HTMLElement).closest('.timeline-track-del')) return;
+        if ((e.target as HTMLElement).closest('.timeline-track-extract')) return;
+        if ((e.target as HTMLElement).closest('.timeline-track-ms')) return;
         store.mutate((p) => (p.activeTrackId = track.id));
         if (track.type === 'audio' && !track.audioFileName) {
           openAudioPicker(track);
@@ -472,6 +535,44 @@ export function createTimeline(): { root: HTMLElement } {
   function openAudioPicker(track: AudioTrack): void {
     pendingRole = track.role;
     audioInput.click();
+  }
+
+  /**
+   * Run the vocal separation pipeline and load the two stems into their roles:
+   * lead vocal → 'lead', instrumental → 'minus'.
+   */
+  async function runSeparation(): Promise<void> {
+    const original = getAudioBytesMap().get('original');
+    if (!original) {
+      toast('Сначала загрузите оригинал', 'err');
+      return;
+    }
+    // Explain why the action can't run instead of failing silently mid-way.
+    const status = getSeparationStatus();
+    if (!status.available) {
+      toast('Извлечение недоступно: ' + status.reason, 'err');
+      return;
+    }
+    const dialog = openSeparationDialog();
+    try {
+      const { lead, instrumental } = await separateVocals(original, {
+        onDownload: (loaded, total) => dialog.setDownload(total > 0 ? loaded / total : null),
+        onStatus: (msg) => dialog.setStatus(msg),
+        onProgress: (frac) => dialog.setProgress(frac),
+      });
+      // Derive sensible filenames from the original's name.
+      const origName =
+        getAudioTrackByRole(store.getProject(), 'original')?.audioFileName ?? 'original.mp3';
+      const base = origName.replace(/\.[^.]+$/, '');
+      await loadAudioBytesIntoRole('lead', lead, `${base} (вокал).wav`);
+      await loadAudioBytesIntoRole('minus', instrumental, `${base} (минус).wav`);
+      dialog.close();
+      toast('Вокал и минус извлечены и загружены', 'ok');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      dialog.error(msg);
+      toast('Не удалось извлечь вокал: ' + msg, 'err');
+    }
   }
 
   function fmtTime(ms: number): string {

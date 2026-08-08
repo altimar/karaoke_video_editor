@@ -455,6 +455,52 @@ textarea.lyrics {
 .timeline-track-del:hover {
   color: var(--danger);
 }
+/* "Extract minus" action button on the minus-role header (✨). */
+.timeline-track-extract {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--text-dim);
+  user-select: none;
+}
+.timeline-track-extract:hover {
+  color: var(--accent);
+  background: rgba(255, 225, 77, 0.1);
+}
+/* Mute / Solo buttons on audio-track headers (M / S). */
+.timeline-track-ms {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  width: 16px;
+  text-align: center;
+  cursor: pointer;
+  border-radius: 3px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  user-select: none;
+}
+.timeline-track-ms:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.timeline-track-ms.mute.active {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.timeline-track-ms.solo.active {
+  color: #1a1033;
+  background: var(--accent);
+  border-color: var(--accent);
+}
 
 .hint {
   font-size: 11px;
@@ -607,6 +653,17 @@ textarea.lyrics {
   color: var(--text-dim);
   font-family: "SF Mono", "Consolas", monospace;
   text-align: center;
+}
+/* Separation dialog: status line + small label above a progress bar. */
+.separation-status {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.modal-progress .progress-label {
+  margin-bottom: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
 }
 .modal-footer {
   display: flex;

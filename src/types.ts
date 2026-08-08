@@ -115,15 +115,19 @@ export interface TextTrack extends BaseTrack {
  * project (in the audio engine / controls) so the model stays light; the track
  * stores the filename + automation only. Does not render to the video frame.
  *
- * A project has three fixed audio roles: 'original' (reference, for timing
- * capture), 'minus' (instrumental — mixed into the video export), 'back'
- * (backing vocals — also mixed into the export). Roles can't be renamed.
+ * A project has four fixed audio roles:
+ *  - 'original' — the full reference mix, used for timing capture only.
+ *  - 'minus'    — the instrumental (vocals removed); mixed into the video export.
+ *  - 'back'     — backing vocals; mixed into the video export.
+ *  - 'lead'     — the lead vocal (extracted by Mel-RoFormer); audible in editor
+ *                 playback but NOT mixed into the video export.
+ * Roles can't be renamed.
  */
-export type AudioRole = 'original' | 'minus' | 'back';
+export type AudioRole = 'original' | 'minus' | 'back' | 'lead';
 
 export interface AudioTrack extends BaseTrack {
   type: 'audio';
-  /** Fixed role (original/minus/back). Names and playback semantics follow it. */
+  /** Fixed role (original/minus/back/lead). Names and playback semantics follow it. */
   role: AudioRole;
   /** Source audio filename; empty string = no audio loaded in this slot. */
   audioFileName: string;
@@ -132,6 +136,10 @@ export interface AudioTrack extends BaseTrack {
    * 2 = double). Sorted by timeMs; empty = no automation (flat gain 1.0).
    */
   volumeAutomation: VolumePoint[];
+  /** Mute: when true the role plays at gain 0 and is excluded from the MP4 export. */
+  muted: boolean;
+  /** Solo: when true (on any role) only solo-ed roles are audible / exported. */
+  solo: boolean;
 }
 
 /** Any track kind (text, audio, …). Narrow via the `type` discriminator. */
@@ -223,6 +231,7 @@ export function createTextTrack(name: string, lines?: Line[]): TextTrack {
 /** Human-readable name for an audio role (also the track name; roles can't be renamed). */
 export const AUDIO_ROLE_NAMES: Record<AudioRole, string> = {
   original: 'Оригинал',
+  lead: 'Вокал',
   minus: 'Минус',
   back: 'Бэк',
 };
@@ -236,6 +245,8 @@ export function createAudioTrack(role: AudioRole, audioFileName = ''): AudioTrac
     role,
     audioFileName,
     volumeAutomation: [],
+    muted: false,
+    solo: false,
   };
 }
 
@@ -285,11 +296,25 @@ export function getAudioTrackByRole(project: Project, role: AudioRole): AudioTra
   return getAudioTracks(project).find((t) => t.role === role) ?? null;
 }
 
-/** Default project used on first load: one text track + the three fixed audio slots. */
+/**
+ * Whether a loaded audio role is audible under the current mute/solo state.
+ * A role is audible when it is NOT muted AND (no role is solo-ed, OR it is solo).
+ * Used by both the playback engine and the MP4 export to pick the same set.
+ */
+export function isRoleAudible(project: Project, role: AudioRole): boolean {
+  const at = getAudioTrackByRole(project, role);
+  if (!at || !at.audioFileName) return false;
+  if (at.muted) return false;
+  const anySolo = getAudioTracks(project).some((t) => t.solo && t.audioFileName);
+  return !anySolo || at.solo;
+}
+
+/** Default project used on first load: one text track + the four fixed audio slots. */
 export function createDefaultProject(): Project {
   const track = createTextTrack('Дорожка 1');
   const audio = [
     createAudioTrack('original'),
+    createAudioTrack('lead'),
     createAudioTrack('minus'),
     createAudioTrack('back'),
   ];

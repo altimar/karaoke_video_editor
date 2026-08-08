@@ -127,7 +127,7 @@ export function loadProject(data: Uint8Array): LoadProjectResult {
   for (const name of Object.keys(unzipped)) {
     if (!name.startsWith(AUDIO_PREFIX)) continue;
     const role = name.slice(AUDIO_PREFIX.length).split('.')[0] as AudioRole;
-    if (role === 'original' || role === 'minus' || role === 'back') {
+    if (role === 'original' || role === 'lead' || role === 'minus' || role === 'back') {
       audioByRole.set(role, unzipped[name]);
     }
   }

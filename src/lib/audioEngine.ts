@@ -1,15 +1,17 @@
 /**
  * Audio engine — multi-voice playback.
  *
- * A project has three fixed audio roles: 'original' (reference for timing
- * capture), 'minus' (instrumental — mixed into the video export) and 'back'
- * (backing vocals — also mixed into the export). Each loaded role becomes a
- * "voice": an <audio> element → MediaElementSource → GainNode → destination.
- * Voices sum at the shared AudioContext destination.
+ * A project has four fixed audio roles: 'original' (the full reference mix,
+ * used for timing capture), 'minus' (instrumental), 'back' (backing vocals),
+ * and 'lead' (the extracted lead vocal). Each loaded role becomes a "voice":
+ * an <audio> element → MediaElementSource → GainNode → destination. Voices sum
+ * at the shared AudioContext destination.
  *
  * Two playback modes select WHICH voices are audible:
- *  - playback (`play`): minus + back if either is loaded, else original.
- *  - record  (`playForRecord`): original if loaded, else minus + back.
+ *  - playback (`play`): lead + minus + back if any are loaded, else original.
+ *    The lead vocal is audible in the editor so the user hears the singer while
+ *    working, but it is NOT mixed into the video export (see export.ts).
+ *  - record  (`playForRecord`): original if loaded, else lead + minus + back.
  *
  * All started voices stay sample-aligned because they start from the same seek
  * position at the same instant. currentTimeMs / durationMs are read from the
@@ -30,6 +32,9 @@ interface Voice {
   buffer: AudioBuffer | null;
   url: string | null;
   automation: VolumePoint[];
+  /** Mute/Solo flags, applied as a 0/1 factor on top of the envelope gain. */
+  muted: boolean;
+  solo: boolean;
 }
 
 class AudioEngine {
@@ -66,7 +71,7 @@ class AudioEngine {
     audio.addEventListener('play', () => this.notifyState(true));
     audio.addEventListener('pause', () => this.onElementPause());
     audio.addEventListener('ended', () => this.onElementPause());
-    const voice: Voice = { role, audio, sourceNode, gainNode, buffer: null, url: null, automation: [] };
+    const voice: Voice = { role, audio, sourceNode, gainNode, buffer: null, url: null, automation: [], muted: false, solo: false };
     this.voices.set(role, voice);
     return voice;
   }
@@ -82,8 +87,8 @@ class AudioEngine {
     v.audio.load();
     const arrBuf = (bytes.buffer as ArrayBuffer).slice(0);
     v.buffer = await ctx.decodeAudioData(arrBuf.slice(0));
-    // Apply any automation already set on this voice.
-    v.gainNode.gain.value = gainAtTime(v.automation, this.currentTimeMs);
+    // Apply any automation already set on this voice (× mute/solo factor).
+    v.gainNode.gain.value = this.roleGain(v, this.currentTimeMs);
   }
 
   /** Clear (unload) a role's audio — the slot becomes empty. */
@@ -115,23 +120,58 @@ class AudioEngine {
     const v = this.voices.get(role);
     if (!v) return;
     v.automation = points;
-    v.gainNode.gain.value = gainAtTime(points, this.currentTimeMs);
+    v.gainNode.gain.value = this.roleGain(v, this.currentTimeMs);
+  }
+
+  /**
+   * Update a role's mute/solo flags. The mute/solo factor is applied on top of
+   * the volume-automation envelope every RAF tick (and immediately here). A role
+   * is silent when it is muted, OR when any role is solo-ed and this one is not.
+   */
+  setMuteSolo(role: AudioRole, muted: boolean, solo: boolean): void {
+    const v = this.voices.get(role);
+    if (!v) return;
+    v.muted = muted;
+    v.solo = solo;
+    // Apply immediately at the current position (a solo toggle affects all roles).
+    const t = this.currentTimeMs;
+    for (const voice of this.voices.values()) {
+      if (voice.buffer) voice.gainNode.gain.value = this.roleGain(voice, t);
+    }
+  }
+
+  /** Effective gain factor for a voice at time t: envelope × mute/solo factor. */
+  private roleGain(v: Voice, timeMs: number): number {
+    const envelope = gainAtTime(v.automation, timeMs);
+    if (v.muted) return 0;
+    // If any loaded voice is solo-ed, only solo voices are audible.
+    const anySolo = this.anySoloActive();
+    if (anySolo && !v.solo) return 0;
+    return envelope;
+  }
+
+  /** True if at least one loaded voice has solo=true. */
+  private anySoloActive(): boolean {
+    for (const v of this.voices.values()) {
+      if (v.buffer && v.solo) return true;
+    }
+    return false;
   }
 
   // --- Playback mode selection ---
 
-  /** Roles for normal playback: minus + back if either is loaded, else original. */
+  /** Roles for normal playback: lead + minus + back if any are loaded, else original. */
   private playbackRoles(): AudioRole[] {
     const loaded = (rs: AudioRole[]) => rs.filter((r) => this.has(r));
-    const mix = loaded(['minus', 'back']);
+    const mix = loaded(['lead', 'minus', 'back']);
     if (mix.length > 0) return mix;
     return loaded(['original']);
   }
 
-  /** Roles for timing-capture playback: original if loaded, else minus + back. */
+  /** Roles for timing-capture playback: original if loaded, else lead + minus + back. */
   private recordRoles(): AudioRole[] {
     if (this.has('original')) return ['original'];
-    return (['minus', 'back'] as AudioRole[]).filter((r) => this.has(r));
+    return (['lead', 'minus', 'back'] as AudioRole[]).filter((r) => this.has(r));
   }
 
   get isPlaying(): boolean {
@@ -222,9 +262,9 @@ class AudioEngine {
       if (v.buffer) v.audio.currentTime = t;
     }
     this.notifyTime(timeMs);
-    // Re-apply each voice's envelope from the new position.
+    // Re-apply each voice's envelope (× mute/solo factor) from the new position.
     for (const v of this.voices.values()) {
-      if (v.buffer) v.gainNode.gain.value = gainAtTime(v.automation, timeMs);
+      if (v.buffer) v.gainNode.gain.value = this.roleGain(v, timeMs);
     }
   }
 
@@ -249,10 +289,10 @@ class AudioEngine {
     this.stopTimeLoop();
     const tick = () => {
       const timeMs = this.currentTimeMs;
-      // Apply each active voice's envelope for the current position.
+      // Apply each active voice's envelope (× mute/solo factor) for the position.
       for (const r of this.activeRoles) {
         const v = this.voices.get(r);
-        if (v) v.gainNode.gain.value = gainAtTime(v.automation, timeMs);
+        if (v) v.gainNode.gain.value = this.roleGain(v, timeMs);
       }
       this.notifyTime(timeMs);
       if (this.isPlaying) this.rafId = requestAnimationFrame(tick);

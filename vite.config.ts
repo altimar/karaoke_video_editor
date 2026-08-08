@@ -7,6 +7,13 @@ export default defineConfig({
   server: {
     port: 5173,
     open: true,
+    // Cross-origin isolation enables SharedArrayBuffer, required by the
+    // multithreaded WASM backend of onnxruntime-web (in-browser separation).
+    // A production deployment must serve these same two headers.
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
   },
   // mediabunny ships ESM with browser field; Vite resolves it natively.
   optimizeDeps: {

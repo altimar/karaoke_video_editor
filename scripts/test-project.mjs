@@ -47,8 +47,9 @@ const project = {
       lines: [{ syllables: [{ text: 'Yo', startMs: 1000, sep: '' }] }],
     },
     { id: 'a1', type: 'audio', name: 'Оригинал', role: 'original', audioFileName: '', volumeAutomation: [] },
-    { id: 'a2', type: 'audio', name: 'Минус', role: 'minus', audioFileName: 'song.mp3', volumeAutomation: [] },
-    { id: 'a3', type: 'audio', name: 'Бэк', role: 'back', audioFileName: '', volumeAutomation: [] },
+    { id: 'a2', type: 'audio', name: 'Вокал', role: 'lead', audioFileName: '', volumeAutomation: [] },
+    { id: 'a3', type: 'audio', name: 'Минус', role: 'minus', audioFileName: 'song.mp3', volumeAutomation: [] },
+    { id: 'a4', type: 'audio', name: 'Бэк', role: 'back', audioFileName: '', volumeAutomation: [] },
   ],
   activeTrackId: 't1',
 };
@@ -81,8 +82,8 @@ assert(minusBytes[0] === 0xff && minusBytes[1] === 0xfb, 'audio bytes content pr
 assert(p.background.bgType === 'image', `bg type preserved (got ${p.background.bgType})`);
 assert(p.background.bgImageDataUrl === `data:image/png;base64,${RED_PNG_B64}`, 'bg image data URL restored from entry');
 
-// Tracks + settings preserved (2 text + 3 audio roles).
-assert(p.tracks.length === 5, `5 tracks preserved (got ${p.tracks.length})`);
+// Tracks + settings preserved (2 text + 4 audio roles).
+assert(p.tracks.length === 6, `6 tracks preserved (got ${p.tracks.length})`);
 const backing = p.tracks.find((t) => t.name === 'Backing');
 assert(!!backing, 'text track name preserved');
 const c = backing.rendererSettings.classic;
@@ -95,7 +96,7 @@ assert(c && c.offsetX === 10 && c.offsetY === 20, `classic offset preserved (got
   const { blob: b2 } = saveProject(noAudio, new Map());
   const r2 = loadProject(new Uint8Array(await b2.arrayBuffer()));
   assert(r2.audioByRole.size === 0, 'no audio entries when nothing loaded');
-  assert(r2.project.tracks.length === 5, 'tracks survive without audio');
+  assert(r2.project.tracks.length === 6, 'tracks survive without audio');
 }
 
 // === No background image: bgImageDataUrl is null, no bg entry ===
