@@ -49,7 +49,10 @@
 
 - **Vite + vanilla TypeScript** (без фреймворков).
 - **Mediabunny** для мьюксинга MP4 (H.264 + AAC) через WebCodecs.
-- **Тесты**: Node-скрипты в `scripts/test-*.mjs`, бандлятся через esbuild. Запуск: `npm test`.
+- **Тесты**: двух видов.
+  - **Unit (Vitest)**: спеки в `tests/*.test.ts`, импортируют модули из `src/` напрямую. Запуск: `npm test` (разовый прогон) или `npm run test:watch` (watch-режим). Тест slider-drag использует jsdom-окружение (`@vitest-environment jsdom` в докблоке). Конфиг: `vitest.config.ts` (include ограничен `tests/`, чтобы не задевать e2e-спеки).
+  - **E2E (браузер)**: Playwright + headless Chromium, спеки в `e2e/*.spec.ts`, фикстуры в `e2e/helpers.mjs`. Запуск: `npm run test:e2e` (сам поднимает dev-сервер). Покрывают то, что недоступно в Node: загрузку/сохранение файлов, диалог экспорта, WebCodecs.
+  - Хуки для E2E в приложении: `window.__store` / `window.__audioEngine` (экспонируются в `src/main.ts`), стабильные селекторы — `data-testid` (кнопки топбара, файловые инпуты, заголовки дорожек `track-head-<role>`, вкладки/кнопки диалога экспорта). При добавлении UI-элементов, участвующих в тестах, добавляй им `data-testid`.
 - **Браузер**: Chrome/Edge (нужен WebCodecs). Dev-сервер: `npm run dev`.
 
 ### 5. Процесс работы

@@ -39,6 +39,7 @@ export function createTopbar(toast: ToastFn): {
   // --- Play / pause ---
   const playBtn = document.createElement('button');
   setTopbarButton(playBtn, '▶', 'Пуск');
+  playBtn.dataset.testid = 'btn-play';
   playBtn.title = 'Пуск / пауза';
   playBtn.addEventListener('click', () => audioEngine.toggle());
   root.appendChild(playBtn);
@@ -48,6 +49,7 @@ export function createTopbar(toast: ToastFn): {
   recBtn.className = 'primary';
   setTopbarButton(recBtn, '●', 'Запись таймингов');
   recBtn.title = 'Включите воспроизведение и нажимайте Пробел на каждый слог';
+  recBtn.dataset.testid = 'btn-record';
   recBtn.addEventListener('click', () => {
     if (timingCapture.isRecording()) {
       timingCapture.stop();
@@ -75,10 +77,12 @@ export function createTopbar(toast: ToastFn): {
   const openBtn = document.createElement('button');
   setTopbarButton(openBtn, '📂', 'Открыть');
   openBtn.title = 'Открыть проект (.karaokeproject) или KaraFun (.kfn)';
+  openBtn.dataset.testid = 'btn-open';
   const openInput = document.createElement('input');
   openInput.type = 'file';
   openInput.accept = '.karaokeproject,.kfn';
   openInput.style.display = 'none';
+  openInput.dataset.testid = 'input-open-project';
   openBtn.addEventListener('click', () => openInput.click());
   openInput.addEventListener('change', async () => {
     const f = openInput.files?.[0];
@@ -136,6 +140,7 @@ export function createTopbar(toast: ToastFn): {
   exportBtn.className = 'primary';
   setTopbarButton(exportBtn, '⬇', 'Экспорт');
   exportBtn.title = 'Экспорт: видео (MP4) / проект / KaraFun (.kfn)';
+  exportBtn.dataset.testid = 'btn-export';
   exportBtn.addEventListener('click', () => onExport(exportBtn));
   root.appendChild(exportBtn);
 

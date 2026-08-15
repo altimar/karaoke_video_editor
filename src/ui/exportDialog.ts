@@ -66,12 +66,15 @@ export function openExportDialog(kfnWarnings: string[], initialFps: number): Exp
   const mp4Tab = document.createElement('button');
   mp4Tab.className = 'export-tab active';
   mp4Tab.textContent = 'Видео (MP4)';
+  mp4Tab.dataset.testid = 'tab-mp4';
   const projectTab = document.createElement('button');
   projectTab.className = 'export-tab';
   projectTab.textContent = 'Проект (.karaokeproject)';
+  projectTab.dataset.testid = 'tab-project';
   const kfnTab = document.createElement('button');
   kfnTab.className = 'export-tab';
   kfnTab.textContent = 'KaraFun (.kfn)';
+  kfnTab.dataset.testid = 'tab-kfn';
   tabBar.appendChild(mp4Tab);
   tabBar.appendChild(projectTab);
   tabBar.appendChild(kfnTab);
@@ -89,6 +92,7 @@ export function openExportDialog(kfnWarnings: string[], initialFps: number): Exp
   fieldLabel.textContent = 'Качество видео';
   field.appendChild(fieldLabel);
   const qualitySelect = document.createElement('select');
+  qualitySelect.dataset.testid = 'select-quality';
   for (const q of QUALITY_PRESETS) {
     const opt = document.createElement('option');
     opt.value = q.id;
@@ -193,9 +197,11 @@ export function openExportDialog(kfnWarnings: string[], initialFps: number): Exp
   footer.className = 'modal-footer';
   const cancelBtn = document.createElement('button');
   cancelBtn.textContent = 'Отмена';
+  cancelBtn.dataset.testid = 'btn-cancel-export';
   const startBtn = document.createElement('button');
   startBtn.className = 'primary';
   startBtn.textContent = 'Экспорт';
+  startBtn.dataset.testid = 'btn-start-export';
   footer.appendChild(cancelBtn);
   footer.appendChild(startBtn);
   modal.appendChild(footer);

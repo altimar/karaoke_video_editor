@@ -402,6 +402,9 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         (track.type === 'audio' ? ' audio' : '');
       th.style.height = rowHeight(track) + TRACK_PAD + 'px';
       th.title = 'Сделать эту дорожку активной';
+      // Stable selector anchors for E2E: role for audio tracks, id for text.
+      th.dataset.testid = track.type === 'audio' ? `track-head-${track.role}` : 'track-head-text';
+      th.dataset.trackId = track.id;
 
       const name = document.createElement('span');
       name.className = 'timeline-track-name';
@@ -518,6 +521,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
   audioInput.type = 'file';
   audioInput.accept = 'audio/mpeg,audio/mp3,.mp3,audio/wav,.wav,audio/ogg,.ogg';
   audioInput.style.display = 'none';
+  audioInput.dataset.testid = 'input-audio-load';
   let pendingRole: import('../../types').AudioRole | null = null;
   audioInput.addEventListener('change', async () => {
     const f = audioInput.files?.[0];

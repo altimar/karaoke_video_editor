@@ -7,3 +7,9 @@ dist
 # Local-only test fixtures (large KaraFun binaries) and agent workspace.
 kfn/
 .zcode/
+
+# E2E (Playwright) build artifacts and reports
+e2e/_*.mjs
+e2e/_*.ts
+test-results/
+playwright-report/

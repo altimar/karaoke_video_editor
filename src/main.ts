@@ -113,6 +113,13 @@ function main(): void {
       audioEngine.setMuteSolo(at.role, at.muted, at.solo);
     }
   });
+
+  // E2E test hook (Playwright): read-only access to the app state & audio
+  // engine from page.evaluate, so tests can assert on the project model
+  // instead of scraping DOM.
+  const hooks = window as unknown as { __store: typeof store; __audioEngine: typeof audioEngine };
+  hooks.__store = store;
+  hooks.__audioEngine = audioEngine;
 }
 
 function helpCard(): HTMLElement {
