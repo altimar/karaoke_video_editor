@@ -42,6 +42,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * Add future models (e.g. a Russian xlsr CTC export) here.
  */
 const MODEL_REGISTRY = {
+  // App default: large (p90 247 ms on kiri vs 8.3 s for base).
+  'en-large-fp16': {
+    url: 'https://huggingface.co/Project42/wav2vec2-large-lv60-align/resolve/main/model_fp16.onnx',
+    cacheName: 'wav2vec2-align-large-v1',
+  },
   'en-base-fp16': {
     url: 'https://huggingface.co/Xenova/wav2vec2-base-960h/resolve/main/onnx/model_fp16.onnx',
     cacheName: 'wav2vec2-align-v1',
@@ -57,7 +62,7 @@ const getArg = (name) => {
   const i = args.indexOf('--' + name);
   return i >= 0 ? args[i + 1] : undefined;
 };
-const modelId = getArg('model') ?? 'en-base-fp16';
+const modelId = getArg('model') ?? 'en-large-fp16';
 const songSlug = getArg('song') ?? 'kiri';
 const strategy = getArg('strategy') ?? 'proportional';
 
@@ -114,7 +119,7 @@ try {
   page.on('pageerror', (e) => console.error('PAGEERROR:', e.message));
   await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' });
 
-  if (modelId !== 'en-base-fp16') {
+  if (modelId !== 'en-large-fp16') {
     const m = MODEL_REGISTRY[modelId];
     if (!m) throw new Error(`Unknown model "${modelId}". Known: ${Object.keys(MODEL_REGISTRY).join(', ')}`);
     await page.evaluate(([url, cache]) => window.__setAlignModel(url, cache), [m.url, m.cacheName]);
@@ -124,12 +129,15 @@ try {
   // KFN fixture, lead for --audio). --separate: load as the ORIGINAL and run
   // our Mel-RoFormer extraction — the full user pipeline (big first-run
   // download, several minutes of inference).
-  await page.locator(`[data-testid="track-head-${audioRole}"]`).click();
-  await page.locator('[data-testid="input-audio-load"]').setInputFiles({
+  // In HEADED mode the header click opens a NATIVE file dialog — intercept
+  // the chooser and feed it the file (headless auto-dismisses instead).
+  const audioPayload = {
     name: 'audio.mp3',
     mimeType: 'audio/mpeg',
     buffer: readFileSync(audioPath),
-  });
+  };
+  page.on('filechooser', (fc) => void fc.setFiles(audioPayload));
+  await page.locator(`[data-testid="track-head-${audioRole}"]`).click();
   await page.waitForFunction(
     (role) => window.__audioEngine && window.__audioEngine.getBuffer(role),
     audioRole,
@@ -178,6 +186,7 @@ try {
     console.warn(`Word count mismatch: got ${gotWords.length}, reference ${refWords.length} — sequence-comparing the prefix.`);
   }
   const diffs = [];
+  const perWord = [];
   const n = Math.min(gotWords.length, refWords.length);
   let mismatches = 0;
   for (let i = 0; i < n; i++) {
@@ -185,7 +194,9 @@ try {
       mismatches++;
       continue;
     }
-    diffs.push(Math.abs((gotWords[i].startMs ?? 0) - (refWords[i].startMs ?? 0)));
+    const dev = (gotWords[i].startMs ?? 0) - (refWords[i].startMs ?? 0);
+    diffs.push(Math.abs(dev));
+    perWord.push({ i, word: normWord(refWords[i].text), ref: refWords[i].startMs, got: gotWords[i].startMs, dev });
   }
   diffs.sort((a, b) => a - b);
   const within = (ms) => (diffs.filter((d) => d <= ms).length / (diffs.length || 1)) * 100;
@@ -213,6 +224,14 @@ try {
 
   console.log('\n=== Alignment eval ===');
   for (const [k, v] of Object.entries(report)) console.log(`  ${k}: ${v}`);
+
+  // Diagnostics: worst words + chronological deviations (drift runs).
+  const worst = [...perWord].sort((a, b) => Math.abs(b.dev) - Math.abs(a.dev)).slice(0, 15);
+  console.log('\n  worst words (dev>1s):');
+  for (const w of worst) console.log(`    #${w.i} "${w.word}" ref=${(w.ref/1000).toFixed(1)}s got=${(w.got/1000).toFixed(1)}s dev=${(w.dev/1000).toFixed(1)}s`);
+  console.log('\n  chronological (song order):');
+  const line = perWord.map((w) => (w.dev >= 0 ? '+' : '') + (w.dev / 1000).toFixed(1)).join(' ');
+  console.log('  ' + line);
 
   mkdirSync(join(__dirname, 'results'), { recursive: true });
   const outFile = join(__dirname, 'results', `${Date.now()}-${modelId}-${songSlug}.json`);

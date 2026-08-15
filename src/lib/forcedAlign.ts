@@ -28,11 +28,17 @@ import {
   distributeSyllableTimes,
 } from './alignment/ctc';
 
-/** Single-file ONNX, fp16 — native for the WebGPU EP (int8 falls back to CPU
- * and is order-of-magnitude slower; fp32 would be a 378 MB download). */
+/**
+ * wav2vec2-large-960h-lv60-self (fp16, ~630 MB), exported by
+ * eval/export-large-align.py + fp16-converted (see the script). Same 32-token
+ * vocab as base but ~3.3× the parameters — empirically this is the difference
+ * between confusing repeated choruses (base: ±10 s drift runs, p90 8.3 s) and
+ * not confusing them (large: p90 247 ms, worst word 0.6 s; kiri benchmark in
+ * eval/results/). WebGPU-native fp16.
+ */
 const MODEL_URL =
-  'https://huggingface.co/Xenova/wav2vec2-base-960h/resolve/main/onnx/model_fp16.onnx';
-const MODEL_CACHE = 'wav2vec2-align-v1';
+  'https://huggingface.co/Project42/wav2vec2-large-lv60-align/resolve/main/model_fp16.onnx';
+const MODEL_CACHE = 'wav2vec2-align-large-v1';
 
 /** Model override (used by the eval harness to compare checkpoints). */
 let modelOverride: { url: string; cacheName: string } | null = null;
@@ -47,7 +53,9 @@ export function setAlignmentModelOverride(url: string, cacheName: string): void 
 const SR = 16000;
 const FRAME_MS = 20;
 const FRAME_OFFSET_MS = 12.5; // center of the 400-sample receptive window
-/** Inference chunking: wav2vec2-base attention gets slow/blowup beyond ~30 s. */
+/** Inference chunking: attention memory can't hold a whole song. 30 s proved
+ * empirically better than 16 s (shorter chunks LOSE context and worsen the
+ * repeated-chorus confusion — benchmark in eval/results/). */
 const CHUNK_SEC = 30;
 const OVERLAP_SEC = 2;
 
@@ -223,6 +231,12 @@ async function loadModel(onDownload?: (loaded: number, total: number) => void): 
     all.set(p, off);
     off += p.length;
   }
-  await cache.put(url, new Response(all.buffer as ArrayBuffer));
+  // Best-effort cache: a quota rejection must not kill the run — proceed with
+  // the in-memory bytes (the next run will re-download).
+  try {
+    await cache.put(url, new Response(all.buffer as ArrayBuffer));
+  } catch {
+    /* uncached */
+  }
   return all;
 }
