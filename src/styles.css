@@ -472,6 +472,22 @@ textarea.lyrics {
   color: var(--accent);
   background: rgba(255, 225, 77, 0.1);
 }
+/* Auto-timing action button on text-track headers (⏱). */
+.timeline-track-align {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 4px;
+  color: var(--text-dim);
+  user-select: none;
+}
+.timeline-track-align:hover {
+  color: var(--accent);
+  background: rgba(255, 225, 77, 0.1);
+}
 /* Mute / Solo buttons on audio-track headers (M / S). */
 .timeline-track-ms {
   flex: 0 0 auto;

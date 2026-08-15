@@ -24,7 +24,7 @@ export interface SeparationDialog {
   error: (message: string) => void;
 }
 
-export function openSeparationDialog(): SeparationDialog {
+export function openSeparationDialog(titleText = 'Извлечение минуса'): SeparationDialog {
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
 
@@ -36,7 +36,7 @@ export function openSeparationDialog(): SeparationDialog {
   header.className = 'modal-header';
   const title = document.createElement('div');
   title.className = 'modal-title';
-  title.textContent = 'Извлечение минуса';
+  title.textContent = titleText;
   const closeBtn = document.createElement('button');
   closeBtn.className = 'modal-close';
   closeBtn.textContent = '✕';
@@ -60,7 +60,7 @@ export function openSeparationDialog(): SeparationDialog {
   downloadWrap.hidden = true;
   const downloadLabel = document.createElement('div');
   downloadLabel.className = 'progress-label';
-  downloadLabel.textContent = 'Загрузка модели (~700 МБ, только первый раз)';
+  downloadLabel.textContent = 'Загрузка модели (до ~1 ГБ суммарно, только первый раз)';
   const downloadBar = document.createElement('div');
   downloadBar.className = 'bar';
   const downloadFill = document.createElement('div');

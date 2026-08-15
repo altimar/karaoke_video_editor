@@ -21,7 +21,8 @@ import {
   clearAudioRole,
   getAudioBytesMap,
 } from '../../lib/audioLoader';
-import { separateVocals, getSeparationStatus } from '../../lib/separation';
+import { separateFull, getSeparationStatus } from '../../lib/separation';
+import { autoAlignTimings, getAlignmentStatus } from '../../lib/forcedAlign';
 import { loadBgVideo, clearBgVideo, getBgVideoBytes } from '../../lib/backgroundVideo';
 import { ensureBgFilmstrip, setFilmstripOnReady } from '../../lib/bgThumbnails';
 import { invalidateBgImageCache } from '../../lib/render';
@@ -483,15 +484,33 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       // Click on the header body: activate the track; for an empty audio role,
       // also open the load-audio dialog.
       th.addEventListener('click', (e) => {
-        // Let inner buttons (extract / mute / solo / delete) handle their own clicks.
+        // Let inner buttons (extract / align / mute / solo / delete) handle their own clicks.
         if ((e.target as HTMLElement).closest('.timeline-track-del')) return;
         if ((e.target as HTMLElement).closest('.timeline-track-extract')) return;
+        if ((e.target as HTMLElement).closest('.timeline-track-align')) return;
         if ((e.target as HTMLElement).closest('.timeline-track-ms')) return;
         store.mutate((p) => (p.activeTrackId = track.id));
         if (track.type === 'audio' && !track.audioFileName) {
           openAudioPicker(track);
         }
       });
+
+      // Auto-timing button (text tracks): CTC forced alignment of the lyrics
+      // against the vocal audio. Uses the separated lead, else the original,
+      // else the backing-vocal stem. Resets the track's existing timings.
+      if (track.type === 'text') {
+        const alignBtn = document.createElement('span');
+        alignBtn.className = 'timeline-track-align';
+        alignBtn.textContent = '⏱';
+        alignBtn.title = 'Авторасстановка таймингов по вокалу';
+        alignBtn.dataset.testid = 'btn-auto-align';
+        alignBtn.dataset.trackId = track.id;
+        alignBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          void runAutoAlign(track.id);
+        });
+        th.appendChild(alignBtn);
+      }
 
       // Delete / clear button.
       const del = document.createElement('span');
@@ -649,9 +668,9 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       toast('Извлечение недоступно: ' + status.reason, 'err');
       return;
     }
-    const dialog = openSeparationDialog();
+    const dialog = openSeparationDialog('Извлечение вокала, минуса и бэка');
     try {
-      const { lead, instrumental } = await separateVocals(original, {
+      const { lead, back, instrumental } = await separateFull(original, {
         onDownload: (loaded, total) => dialog.setDownload(total > 0 ? loaded / total : null),
         onStatus: (msg) => dialog.setStatus(msg),
         onProgress: (frac) => dialog.setProgress(frac),
@@ -660,10 +679,11 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       const origName =
         getAudioTrackByRole(store.getProject(), 'original')?.audioFileName ?? 'original.mp3';
       const base = origName.replace(/\.[^.]+$/, '');
-      await loadAudioBytesIntoRole('lead', lead, `${base} (вокал).wav`);
+      await loadAudioBytesIntoRole('lead', lead, `${base} (лид).wav`);
+      await loadAudioBytesIntoRole('back', back, `${base} (бэк).wav`);
       await loadAudioBytesIntoRole('minus', instrumental, `${base} (минус).wav`);
       dialog.close();
-      toast('Вокал и минус извлечены и загружены', 'ok');
+      toast('Вокал, бэк и минус извлечены и загружены', 'ok');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       dialog.error(msg);
@@ -676,6 +696,52 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const m = Math.floor(s / 60);
     const r = s % 60;
     return `${m}:${r.toString().padStart(2, '0')}`;
+  }
+
+  /**
+   * Run CTC forced alignment for a text track's lyrics against the vocal
+   * audio (lead stem, else original, else back-vocal stem) and OVERWRITE the
+   * track's syllable timings with the result.
+   */
+  async function runAutoAlign(trackId: string): Promise<void> {
+    const proj = store.getProject();
+    const track = proj.tracks.find((t) => t.id === trackId);
+    if (!track || track.type !== 'text') return;
+
+    const status = getAlignmentStatus();
+    if (!status.available) {
+      toast('Авторасстановка недоступна: ' + status.reason, 'err');
+      return;
+    }
+    const buffer =
+      audioEngine.getBuffer('lead') ?? audioEngine.getBuffer('original') ?? audioEngine.getBuffer('back');
+    if (!buffer) {
+      toast('Нет вокального аудио: загрузите оригинал или отделённый вокал', 'err');
+      return;
+    }
+
+    const dialog = openSeparationDialog('Авторасстановка таймингов');
+    try {
+      const starts = await autoAlignTimings(buffer, track.lines, {
+        onDownload: (loaded, total) => dialog.setDownload(total > 0 ? loaded / total : null),
+        onStatus: (msg) => dialog.setStatus(msg),
+        onProgress: (frac) => dialog.setProgress(frac),
+      });
+      store.mutate((p) => {
+        const t = p.tracks.find((x) => x.id === trackId);
+        if (!t || t.type !== 'text') return;
+        let i = 0;
+        for (const line of t.lines) {
+          for (const syl of line.syllables) syl.startMs = starts[i++] ?? null;
+        }
+      });
+      dialog.close();
+      toast(`Готово: расставлено ${starts.length} слогов`, 'ok');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      dialog.error(msg);
+      toast('Авторасстановка не удалась: ' + msg, 'err');
+    }
   }
 
   function draw(): void {

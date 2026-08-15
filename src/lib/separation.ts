@@ -28,18 +28,64 @@
 import { encodeWav } from './wavEncoder';
 import { stft, istft } from './stft';
 
-/** Model file URLs on HuggingFace (musetric re-host of "Kim Vocal 2" SYHFT).
- *  Splits a mix into a single vocal mask; the host derives lead+instrumental. */
-const MODEL_GRAPH_URL =
-  'https://huggingface.co/musetric/vocal-separation-roformer-onnx/resolve/main/syhft_core_folded_fp16_webgpu.onnx';
-const MODEL_DATA_URL =
-  'https://huggingface.co/musetric/vocal-separation-roformer-onnx/resolve/main/syhft_core_folded_fp16_webgpu.onnx.data';
-/** The external-data path embedded in the graph that references the weights.
- *  Must match the `location` recorded inside the .onnx protobuf. musetric's
- *  working reference passes the bare filename (no `./` prefix). */
-const MODEL_DATA_PATH = 'syhft_core_folded_fp16_webgpu.onnx.data';
-/** Cache Storage name for the two model files. */
-const MODEL_CACHE = 'demucs-model-v1';
+/**
+ * One separable model: where it lives, how to load it and the exact tensor
+ * layouts of its STFT-mask interface. Both models share the STFT params
+ * (n_fft 2048 / hop 441 / 44.1 kHz) but pack tensors differently.
+ */
+export interface ModelConfig {
+  graphUrl: string;
+  /** Optional external-data weights (large fp16 models split graph+data). */
+  dataUrl?: string;
+  /** The external-data path recorded INSIDE the .onnx protobuf. */
+  dataPath?: string;
+  cacheName: string;
+  /**
+   * Input packing of the STFT:
+   * - 'bins-major'  — [1, 2050, T, 2], index = ((2f+ch)·T + t)·2 + ri  (musetric)
+   * - 'frames-major'— [1, T, 4100],    index = (t·4100 + (2f+ch)·2) + ri (bdsqlsz)
+   */
+  inputLayout: 'bins-major' | 'frames-major';
+  /**
+   * Output mask packing:
+   * - 'flat' — same layout as the bins-major input, no stem axis (musetric)
+   * - 'stem' — [1, 1, 2050, T, 2], a leading single-stem axis (bdsqlsz)
+   */
+  maskLayout: 'flat' | 'stem';
+}
+
+/**
+ * Phase 1 — vocals+instrumental (musetric re-host of "Kim Vocal 2" SYHFT).
+ * Produces a single vocal mask; the host derives lead+instrumental.
+ */
+const VOCALS_MODEL: ModelConfig = {
+  graphUrl:
+    'https://huggingface.co/musetric/vocal-separation-roformer-onnx/resolve/main/syhft_core_folded_fp16_webgpu.onnx',
+  dataUrl:
+    'https://huggingface.co/musetric/vocal-separation-roformer-onnx/resolve/main/syhft_core_folded_fp16_webgpu.onnx.data',
+  dataPath: 'syhft_core_folded_fp16_webgpu.onnx.data',
+  cacheName: 'demucs-model-v1',
+  inputLayout: 'bins-major',
+  maskLayout: 'flat',
+};
+
+/**
+ * Phase 2 — lead/back split of the vocal stem. aufr33/viperx karaoke
+ * ("RoFormer Lead/Back" on MVSEP), the bdsqlsz ONNX export RE-WRITTEN by
+ * eval/fix-karaoke-onnx.mjs graph surgery (Einsum→MatMul/Mul, wide Split→binary
+ * trees): the stock export builds shaders with 11+ storage buffers and hits
+ * WebGPU's per-stage limit of 10. Hosted at our HF mirror
+ * (Project42/mel-band-roformer-karaoke-webgpu).
+ *
+ * Emits ONE mask (the lead vocal); the backing stem = vocal input − lead.
+ */
+const KARAOKE_MODEL: ModelConfig = {
+  graphUrl:
+    'https://huggingface.co/Project42/mel-band-roformer-karaoke-webgpu/resolve/main/model.onnx',
+  cacheName: 'karaoke-model-v1',
+  inputLayout: 'frames-major',
+  maskLayout: 'stem',
+};
 
 // --- Mel-RoFormer parameters (from the musetric model definition) ---
 /** FFT size. */
@@ -112,70 +158,98 @@ export function isSeparationAvailable(): boolean {
 
 /** Separated stems, each WAV PCM 16-bit stereo bytes ready to load into a role. */
 export interface SeparationResult {
-  /** The lead vocal stem (mel-roformer vocal mask output, peak-normalized). */
+  /** The LEAD vocal stem (phase 2 output; on models without phase 2 = all vocals). */
   lead: Uint8Array;
-  /** The instrumental stem (normalized mix − raw vocals, peak-normalized). */
+  /** The backing-vocals stem (vocal stem − lead). */
+  back: Uint8Array;
+  /** The instrumental stem (normalized mix − vocal stem, peak-normalized). */
   instrumental: Uint8Array;
 }
 
 /**
- * Separate an original audio track into its lead vocal and instrumental stems,
- * returning each as WAV PCM 16-bit stereo bytes ready to load into roles.
+ * FULL two-phase separation, one button:
  *
- * The model produces a complex vocal mask; the instrumental is derived by
- * subtracting the raw vocals from the (peak-normalized) mix. Downloads the
- * model on the first run (cached afterwards). Throws on any failure (no WebGPU,
- * network, decode, inference). The caller surfaces errors.
+ *   phase 1 (VOCALS_MODEL):  original → vocal mask → instrumental = mix − vocals
+ *   phase 2 (KARAOKE_MODEL): vocal stem → lead mask → back = vocals − lead
+ *
+ * The two model sessions are NEVER alive at the same time (each holds
+ * ~0.7–0.9 GB of weights) — phase 1's session is released before phase 2's is
+ * created. Inference progress covers both phases (0–0.5 / 0.5–1); model
+ * downloads report through `onDownload` per phase.
  */
-export async function separateVocals(
+export async function separateFull(
   originalBytes: Uint8Array,
   cb: SeparationCallbacks = {},
 ): Promise<SeparationResult> {
-  // 1. Load both model files (cache-first). Weights (~700 MB) are downloaded once
-  //    and cached; subsequent runs are instant.
-  cb.onStatus?.('Загрузка модели…');
-  const { graph, data } = await loadModelFiles(cb.onDownload);
-
-  // 2. Decode + resample to 44.1 kHz stereo (planar).
+  // --- Decode + resample to 44.1 kHz stereo (planar). ---
   cb.onStatus?.('Декодирование аудио…');
   const { left, right } = await decodeStereoAt44k(originalBytes);
   const nSamples = left.length;
-
-  // 3. Load onnxruntime-web (WebGPU build) + create the session with external data.
-  //    ORT handles the GPUDevice itself — it builds the descriptor with shader-f16
-  //    (if the adapter supports it) and reads buffer limits from adapter.limits.
-  //    Do NOT override env.webgpu.device or patch requestAdapter: ORT 1.29's own
-  //    descriptor is correct, and overriding it breaks session creation.
-  //    `data` is a Uint8Array passed via the `externalData` session option.
-  cb.onStatus?.('Подготовка движка…');
-  const ort = await loadOrt();
-  let session: MelRoformerSession;
-  try {
-    session = await ort.InferenceSession.create(graph, {
-      executionProviders: ['webgpu'],
-      graphOptimizationLevel: 'all',
-      externalData: [{ path: MODEL_DATA_PATH, data }],
-    });
-  } catch (e) {
-    throw new Error(
-      'Не удалось загрузить модель в WebGPU: ' + describeError(e) +
-      '. Возможные причины: нет WebGPU/shader-f16, нехватка видеопамяти (нужно ~1.5 ГБ).',
-    );
-  }
-
-  // 4. Peak-normalize the mix to 0.9 (matches the reference; keeps headroom).
   const mixL = normalizePeak(left, 0.9);
   const mixR = normalizePeak(right, 0.9);
 
-  // 5. Chunked overlap-add separation → raw vocals.
+  // --- Phase 1: vocals + instrumental. ---
+  cb.onStatus?.('Этап 1 из 2: вокал и минус…');
+  const ort = await loadOrt();
+  const session1 = await acquireSession(VOCALS_MODEL, cb.onDownload);
+  const { rawL: vocRawL, rawR: vocRawR } = await runMaskModel(
+    VOCALS_MODEL, session1, ort, mixL, mixR,
+    (frac) => cb.onProgress?.(frac * 0.5),
+  );
+
+  // Free phase 1's ~0.7 GB before loading phase 2's model.
+  session1.release?.();
+  liveSession = null;
+
+  // --- Phase 2: split the vocal stem into lead + backing. ---
+  cb.onStatus?.('Этап 2 из 2: лид и бэк…');
+  const vocL = normalizePeak(vocRawL, 0.9);
+  const vocR = normalizePeak(vocRawR, 0.9);
+  const session2 = await acquireSession(KARAOKE_MODEL, cb.onDownload);
+  const { rawL: leadRawL, rawR: leadRawR } = await runMaskModel(
+    KARAOKE_MODEL, session2, ort, vocL, vocR,
+    (frac) => cb.onProgress?.(0.5 + frac * 0.5),
+  );
+
+  // --- Derive the complement stems and encode everything. ---
+  cb.onStatus?.('Финальная обработка…');
+  const backL = new Float32Array(nSamples);
+  const backR = new Float32Array(nSamples);
+  const instL = new Float32Array(nSamples);
+  const instR = new Float32Array(nSamples);
+  for (let i = 0; i < nSamples; i++) {
+    backL[i] = vocL[i] - leadRawL[i];
+    backR[i] = vocR[i] - leadRawR[i];
+    instL[i] = mixL[i] - vocRawL[i];
+    instR[i] = mixR[i] - vocRawR[i];
+  }
+  return {
+    lead: encodeWav(normalizePeak(leadRawL, 0.9), normalizePeak(leadRawR, 0.9), SAMPLE_RATE),
+    back: encodeWav(normalizePeak(backL, 0.9), normalizePeak(backR, 0.9), SAMPLE_RATE),
+    instrumental: encodeWav(normalizePeak(instL, 0.9), normalizePeak(instR, 0.9), SAMPLE_RATE),
+  };
+}
+
+/**
+ * Chunked overlap-add run of a single-mask model over stereo PCM. Returns the
+ * RAW masked signal (pre-normalization; divide-by-window applied).
+ */
+async function runMaskModel(
+  cfg: ModelConfig,
+  session: MelRoformerSession,
+  ort: OrtModule,
+  inL: Float32Array,
+  inR: Float32Array,
+  onProgress: (fraction: number) => void,
+): Promise<{ rawL: Float32Array; rawR: Float32Array }> {
+  const nSamples = inL.length;
   const window = hammingWindow(CHUNK_SAMPLES);
-  const vocTargetL = new Float32Array(nSamples);
-  const vocTargetR = new Float32Array(nSamples);
-  const vocCountL = new Float32Array(nSamples);
-  const vocCountR = new Float32Array(nSamples);
+  const targetL = new Float32Array(nSamples);
+  const targetR = new Float32Array(nSamples);
+  const countL = new Float32Array(nSamples);
+  const countR = new Float32Array(nSamples);
 
   const nChunks = Math.max(1, Math.ceil((nSamples - CHUNK_SAMPLES) / STEP_SAMPLES) + 1);
-  cb.onStatus?.('Разделение…');
   let chunkIndex = 0;
   for (let offset = 0; offset < nSamples; offset += STEP_SAMPLES) {
     chunkIndex++;
@@ -183,39 +257,19 @@ export async function separateVocals(
     const chunkL = new Float32Array(CHUNK_SAMPLES);
     const chunkR = new Float32Array(CHUNK_SAMPLES);
     for (let i = 0; i < cw.length; i++) {
-      chunkL[i] = mixL[cw.start + i];
-      chunkR[i] = mixR[cw.start + i];
+      chunkL[i] = inL[cw.start + i];
+      chunkR[i] = inR[cw.start + i];
     }
-    const { vocL, vocR } = await processChunk(session, ort, chunkL, chunkR);
-    overlapAdd(vocTargetL, vocCountL, vocL, cw.start, cw.length, window);
-    overlapAdd(vocTargetR, vocCountR, vocR, cw.start, cw.length, window);
-    cb.onProgress?.(chunkIndex / nChunks);
+    const { vocL, vocR } = await processChunk(cfg, session, ort, chunkL, chunkR);
+    overlapAdd(targetL, countL, vocL, cw.start, cw.length, window);
+    overlapAdd(targetR, countR, vocR, cw.start, cw.length, window);
+    onProgress(chunkIndex / nChunks);
     if (offset + STEP_SAMPLES >= nSamples) break;
   }
-  cb.onProgress?.(1);
-
-  // 6. Finalize the raw vocals by dividing out the window-sum normalization.
-  const rawVocL = finalizeOverlap(vocTargetL, vocCountL);
-  const rawVocR = finalizeOverlap(vocTargetR, vocCountR);
-
-  // 7. Lead = peak-normalized raw vocals. Instrumental = normalized mix − raw
-  //    vocals, peak-normalized. Both stems are derived from the same vocal mask.
-  const leadL = normalizePeak(rawVocL, 0.9);
-  const leadR = normalizePeak(rawVocR, 0.9);
-  const instL = new Float32Array(nSamples);
-  const instR = new Float32Array(nSamples);
-  for (let i = 0; i < nSamples; i++) {
-    instL[i] = mixL[i] - rawVocL[i];
-    instR[i] = mixR[i] - rawVocR[i];
-  }
-  const outL = normalizePeak(instL, 0.9);
-  const outR = normalizePeak(instR, 0.9);
-
-  // 8. Encode both stems to WAV bytes for the standard audio pipeline.
-  cb.onStatus?.('Готово…');
+  onProgress(1);
   return {
-    lead: encodeWav(leadL, leadR, SAMPLE_RATE),
-    instrumental: encodeWav(outL, outR, SAMPLE_RATE),
+    rawL: finalizeOverlap(targetL, countL),
+    rawR: finalizeOverlap(targetR, countR),
   };
 }
 
@@ -254,41 +308,86 @@ interface MelRoformerSession {
   run(feeds: Record<string, unknown>): Promise<Record<string, { data: Float32Array }>>;
   inputNames: readonly string[];
   outputNames: readonly string[];
+  release?(): void;
 }
 
 /**
- * Fetch both model files with cache-first semantics. Returns the small graph
- * (~5 MB) and the large fp16 weights (~700 MB) as Uint8Arrays. Both are passed
- * to InferenceSession.create via the `externalData` option (the weights) and the
- * model buffer (the graph). ORT copies them into its WASM heap internally.
- *
- * Both files are stored as separate Cache entries; only downloaded on first run.
+ * Single-slot session cache: at most ONE model session stays alive (~0.7–0.9 GB
+ * of weights each — two at once would blow the memory budget). Switching models
+ * releases the previous session; a re-run recreates it from the byte cache.
+ */
+let liveSession: { cfg: ModelConfig; session: MelRoformerSession } | null = null;
+
+async function acquireSession(
+  cfg: ModelConfig,
+  onDownload?: (loaded: number, total: number) => void,
+): Promise<MelRoformerSession> {
+  if (liveSession && liveSession.cfg === cfg) return liveSession.session;
+  if (liveSession) {
+    liveSession.session.release?.();
+    liveSession = null;
+  }
+  const { graph, data } = await loadModelFiles(cfg, onDownload);
+  const ort = await loadOrt();
+  let session: MelRoformerSession;
+  try {
+    session = await ort.InferenceSession.create(graph, {
+      executionProviders: ['webgpu'],
+      graphOptimizationLevel: 'all',
+      ...(cfg.dataPath && data ? { externalData: [{ path: cfg.dataPath, data }] } : {}),
+    });
+  } catch (e) {
+    throw new Error(
+      'Не удалось загрузить модель в WebGPU: ' + describeError(e) +
+      '. Возможные причины: нет WebGPU/shader-f16, нехватка видеопамяти (нужно ~1.5 ГБ).',
+    );
+  }
+  liveSession = { cfg, session };
+  return session;
+}
+
+/**
+ * Fetch a model's files with cache-first semantics. Returns the graph and the
+ * optional external-data weights as Uint8Arrays. Files are stored as separate
+ * Cache entries; only downloaded on first run. Multi-file models report
+ * COMBINED byte progress across their files.
  */
 async function loadModelFiles(
+  cfg: ModelConfig,
   onDownload?: (loaded: number, total: number) => void,
-): Promise<{ graph: Uint8Array; data: Uint8Array }> {
-  const cache = await caches.open(MODEL_CACHE);
-  const [graphCached, dataCached] = await Promise.all([
-    cache.match(MODEL_GRAPH_URL),
-    cache.match(MODEL_DATA_URL),
-  ]);
+): Promise<{ graph: Uint8Array; data: Uint8Array | null }> {
+  const cache = await caches.open(cfg.cacheName);
+  const urls = [cfg.graphUrl, ...(cfg.dataUrl ? [cfg.dataUrl] : [])];
+  const cached = await Promise.all(urls.map((u) => cache.match(u)));
   // Download whichever files aren't cached, reporting combined progress.
-  const downloads: { url: string }[] = [];
-  if (!graphCached) downloads.push({ url: MODEL_GRAPH_URL });
-  if (!dataCached) downloads.push({ url: MODEL_DATA_URL });
-  if (downloads.length > 0) {
+  const missing = urls.filter((_, i) => !cached[i]);
+  if (missing.length > 0) {
     let totalDownloaded = 0;
-    const totalToDownload = await totalContentLength(downloads.map((d) => d.url));
-    for (const d of downloads) {
-      const buf = await fetchWithProgress(d.url, (loaded) => {
+    const totalToDownload = await totalContentLength(missing);
+    const downloaded = new Map<string, Uint8Array>();
+    for (const url of missing) {
+      const buf = await fetchWithProgress(url, (loaded) => {
         onDownload?.(totalDownloaded + loaded, totalToDownload);
       });
       totalDownloaded += buf.byteLength;
-      await cache.put(d.url, new Response(buf.slice(0)));
+      downloaded.set(url, buf);
+      // Best-effort cache: a quota rejection (small profile quota, private
+      // mode) must not kill the run — proceed with the in-memory bytes.
+      try {
+        await cache.put(url, new Response(buf.slice(0)));
+      } catch {
+        /* uncached — the next run will re-download */
+      }
     }
+    // Prefer the just-downloaded bytes (the cache write may have failed).
+    const graph = downloaded.get(cfg.graphUrl) ?? (await cachedBytes(cfg.graphUrl, undefined, cache));
+    const data = cfg.dataUrl
+      ? downloaded.get(cfg.dataUrl) ?? (await cachedBytes(cfg.dataUrl, undefined, cache))
+      : null;
+    return { graph, data };
   }
-  const graph = await cachedBytes(MODEL_GRAPH_URL, graphCached, cache);
-  const data = await cachedBytes(MODEL_DATA_URL, dataCached, cache);
+  const graph = await cachedBytes(cfg.graphUrl, undefined, cache);
+  const data = cfg.dataUrl ? await cachedBytes(cfg.dataUrl, undefined, cache) : null;
   return { graph, data };
 }
 
@@ -348,8 +447,9 @@ async function totalContentLength(urls: string[]): Promise<number> {
 /**
  * Dynamically import the WebGPU build of onnxruntime-web from CDN. The webgpu
  * bundle is smaller than ort.all.mjs and built specifically for WebGPU models.
+ * Exported — shared by other model-backed features (e.g. forcedAlign.ts).
  */
-async function loadOrt(): Promise<OrtModule> {
+export async function loadOrt(): Promise<OrtModule> {
   const mod = (await import(/* @vite-ignore */ ORT_CDN_URL)) as { default?: OrtModule } & OrtModule;
   return (mod.default ?? mod) as OrtModule;
 }
@@ -374,10 +474,12 @@ async function decodeStereoAt44k(
 }
 
 /**
- * Run one chunk through the model: STFT → pack → inference → masks → iSTFT.
- * Returns the raw (pre-normalization) vocal PCM for this chunk.
+ * Run one chunk through a model: STFT → pack → inference → mask → iSTFT.
+ * Returns the raw (pre-normalization) masked PCM for this chunk — the stem the
+ * model's single mask selects (vocals for the phase-1 model, lead for karaoke).
  */
 async function processChunk(
+  cfg: ModelConfig,
   session: MelRoformerSession,
   ort: OrtModule,
   chunkL: Float32Array,
@@ -389,13 +491,13 @@ async function processChunk(
   // Pad/truncate the frame axis to exactly FRAMES (model expects T=1101).
   // STFT of CHUNK_SAMPLES yields 1 + floor(CHUNK/HOP) = 1 + 1100 = 1101 frames,
   // so no padding is normally needed — but guard defensively.
-  const nFrames = specL.nFrames;
-  const frames = Math.min(nFrames, FRAMES);
-  // Pack into [1, PACKED_BINS, FRAMES, 2] (packed = 2*freq + channel, last [re,im]).
-  const input = packStft(specL, specR, frames);
-  const inputTensor = new ort.Tensor('float32', input, [1, PACKED_BINS, FRAMES, 2]);
+  const frames = Math.min(specL.nFrames, FRAMES);
 
-  // Run inference; feed name is 'stft_repr', output is 'masks'.
+  // Pack into the model's input layout (packed bins = 2*freq + channel).
+  const input = packStft(cfg.inputLayout, specL, specR, frames);
+  const dims = cfg.inputLayout === 'bins-major' ? [1, PACKED_BINS, FRAMES, 2] : [1, FRAMES, PACKED_BINS * 2];
+  const inputTensor = new ort.Tensor('float32', input, dims);
+
   const feeds: Record<string, unknown> = {};
   feeds[session.inputNames[0]] = inputTensor;
   let out: Record<string, { data: Float32Array }>;
@@ -408,19 +510,21 @@ async function processChunk(
   if (!masksOut) throw new Error('Модель не вернула маски.');
   const masks = masksOut.data;
 
-  // Unpack masks, apply (complex multiply) to each channel's STFT, then iSTFT.
-  const maskedL = applyMask(specL, masks, 0, frames);
-  const maskedR = applyMask(specR, masks, 1, frames);
+  // Unpack the mask, apply (complex multiply) to each channel's STFT, iSTFT.
+  const maskedL = applyMask(cfg.maskLayout, specL, masks, 0, frames);
+  const maskedR = applyMask(cfg.maskLayout, specR, masks, 1, frames);
   const vocL = istft(maskedL, { nFft: N_FFT, hop: HOP }, chunkL.length);
   const vocR = istft(maskedR, { nFft: N_FFT, hop: HOP }, chunkR.length);
   return { vocL, vocR };
 }
 
 /**
- * Pack two channel STFTs into the model's [1, PACKED_BINS, FRAMES, 2] input.
- * Layout: index = ((2*freq + channel) * FRAMES + frame) * 2 + (0=real, 1=imag).
+ * Pack two channel STFTs into the model input.
+ * - 'bins-major'  → [1, 2050, T, 2]: index = ((2f+ch)·T + t)·2 + ri
+ * - 'frames-major'→ [1, T, 4100]:    index = t·4100 + (2f+ch)·2 + ri
  */
-function packStft(
+export function packStft(
+  layout: ModelConfig['inputLayout'],
   specL: { real: Float32Array; imag: Float32Array; nBins: number; nFrames: number },
   specR: { real: Float32Array; imag: Float32Array; nBins: number; nFrames: number },
   frames: number,
@@ -432,7 +536,9 @@ function packStft(
       const spec = channel === 0 ? specL : specR;
       for (let frame = 0; frame < frames; frame++) {
         const src = frame * spec.nBins + freq;
-        const dst = (packed * FRAMES + frame) * 2;
+        const dst = layout === 'bins-major'
+          ? (packed * FRAMES + frame) * 2
+          : frame * PACKED_BINS * 2 + packed * 2;
         out[dst] = spec.real[src];
         out[dst + 1] = spec.imag[src];
       }
@@ -444,8 +550,11 @@ function packStft(
 /**
  * Apply a channel's mask to its STFT via complex multiplication, returning a new
  * ComplexSTFT (truncated to `frames` if needed). `(a+bi)*(c+di) = (ac−bd)+(ad+bc)i`.
+ * - 'flat' — mask laid out like the bins-major input: ((2f+ch)·T + t)·2 + ri
+ * - 'stem' — [1, 1, 2050, T, 2]: ((2f+ch)·T + t)·2 + ri (same walk, stem axis = 0)
  */
-function applyMask(
+export function applyMask(
+  layout: ModelConfig['maskLayout'],
   spec: { real: Float32Array; imag: Float32Array; nBins: number; nFrames: number },
   masks: Float32Array,
   channel: number,
@@ -453,13 +562,16 @@ function applyMask(
 ): { real: Float32Array; imag: Float32Array; nBins: number; nFrames: number } {
   const real = new Float32Array(spec.nBins * frames);
   const imag = new Float32Array(spec.nBins * frames);
+  // Frame stride of the mask array: the 'flat' layout mirrors the padded input
+  // (FRAMES entries), the 'stem' layout returns exactly the input frame count.
+  const stride = layout === 'flat' ? FRAMES : frames;
   for (let freq = 0; freq < spec.nBins; freq++) {
     const packed = 2 * freq + channel;
     for (let frame = 0; frame < frames; frame++) {
       const src = frame * spec.nBins + freq;
       const a = spec.real[src];
       const b = spec.imag[src];
-      const m = (packed * FRAMES + frame) * 2;
+      const m = (packed * stride + frame) * 2;
       const c = masks[m];
       const d = masks[m + 1];
       const dst = frame * spec.nBins + freq;
