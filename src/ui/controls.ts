@@ -12,6 +12,7 @@ import { exportToKfn, collectKfnWarnings } from '../lib/kfnExport';
 import { importFromKfn } from '../lib/kfnImport';
 import { saveProject, loadProject } from '../lib/projectFile';
 import { getAudioBytesMap, setAudioBytesMap } from '../lib/audioLoader';
+import { loadBgVideo, clearBgVideo, getBgVideoBytes } from '../lib/backgroundVideo';
 import { openExportDialog } from './exportDialog';
 import { AudioRole, getAudioTrackByRole, getActiveTextTrack, isRoleAudible } from '../types';
 
@@ -105,6 +106,9 @@ export function createTopbar(toast: ToastFn): {
           await audioEngine.loadBytes(role, data, role);
         }
         setAudioBytesMap(result.audioByRole);
+        // KFN never carries an MP4 background video (KaraFun uses WMV — we
+        // don't import it), so reset any previously loaded one.
+        clearBgVideo();
         store.mutate((p) => {
           p.tracks = result.project.tracks;
           p.activeTrackId = result.project.tracks[0].id;
@@ -120,6 +124,8 @@ export function createTopbar(toast: ToastFn): {
           await audioEngine.loadBytes(role, data, role);
         }
         setAudioBytesMap(result.audioByRole);
+        if (result.bgVideoBytes) loadBgVideo(result.bgVideoBytes);
+        else clearBgVideo();
         store.setProject(result.project);
         invalidateBgImageCache();
         toast('Проект загружен', 'ok');
@@ -208,7 +214,7 @@ export function createTopbar(toast: ToastFn): {
 
         if (choice.format === 'project') {
           // Save the editable project file — no audio required.
-          const { blob, filename } = saveProject(store.getProject(), getAudioBytesMap());
+          const { blob, filename } = saveProject(store.getProject(), getAudioBytesMap(), getBgVideoBytes());
           dialog.close();
           downloadBlob(blob, filename);
           toast('Проект сохранён', 'ok');
@@ -248,6 +254,7 @@ export function createTopbar(toast: ToastFn): {
           const result = await exportToKfn(store.getProject(), audioMap, {
             signal: abort.signal,
             onProgress: (frac) => dialog.setProgress(frac),
+            bgVideoBytes: getBgVideoBytes(),
           });
           dialog.close();
           downloadBlob(result.blob, baseName + '.kfn');

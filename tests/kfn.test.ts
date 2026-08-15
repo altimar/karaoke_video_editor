@@ -307,3 +307,42 @@ test('no background → no image entry, no ID=51 effect', async () => {
   assert(!insp.entries.some((e: any) => e.type === 3), 'no type=3 entry without a background image');
   assert(!/ID=51/.test(insp.songIni), 'no ID=51 effect without a background image');
 });
+
+test('video background → ID=62 effect + type=5 entry with the full MP4 bytes', async () => {
+  const p = JSON.parse(JSON.stringify(makeProject()));
+  p.background.bgType = 'video';
+  p.background.bgVideoFileName = 'clip.mp4';
+  const mp4 = new Uint8Array(1000).fill(0x66);
+  const r = await exportToKfn(p, fakeAudioMap, { bgVideoBytes: mp4 });
+
+  const insp = await inspect(r.blob);
+  // minus + back + video (type 5) + Song.ini.
+  assert(insp.entries.length === 4, `4 entries with video bg (got ${insp.entries.length})`);
+  const vidEntry = insp.entries.find((e: any) => e.type === 5);
+  assert(!!vidEntry, 'video stored as a type=5 file');
+  assert(/^background\.(mp4|.*)$/.test(vidEntry?.name ?? ''), `video entry name from filename (got "${vidEntry?.name}")`);
+  assert(vidEntry?.inLen === mp4.length, `video bytes embedded in full (got ${vidEntry?.inLen}, want ${mp4.length})`);
+
+  // ID=62 effect written BEFORE the text effects, referencing the file.
+  const eff1 = insp.songIni.split('[Eff2]')[0];
+  assert(/ID=62/.test(eff1), 'background video effect ID=62 written');
+  assert(new RegExp(`VideoFile=${vidEntry?.name}`).test(eff1), `VideoFile references the embedded file (got ${/VideoFile=.+/.exec(eff1)?.[0]})`);
+  assert(/PlayAtStart=1/.test(eff1), 'ID=62 PlayAtStart=1');
+  assert(/LoopVideo=0/.test(eff1), 'ID=62 LoopVideo=0 (no looping — trim/fallback is on our side)');
+  assert(/EffectCount=3/.test(insp.songIni), `EffectCount includes the video effect (got ${/EffectCount=.+/.exec(insp.songIni)?.[0]})`);
+
+  // The mp4-KFN caveat is surfaced as a warning.
+  assert(r.warnings.some((w: string) => /MP4/.test(w)), 'warning about MP4 not being officially supported by KaraFun');
+});
+
+test('video background WITHOUT bytes → no ID=62 effect, no type=5 entry', async () => {
+  const p = JSON.parse(JSON.stringify(makeProject()));
+  p.background.bgType = 'video';
+  p.background.bgVideoFileName = 'clip.mp4';
+  // no bgVideoBytes passed
+  const r = await exportToKfn(p, fakeAudioMap);
+  const insp = await inspect(r.blob);
+  assert(insp.entries.length === 3, `3 entries (no video embedded) (got ${insp.entries.length})`);
+  assert(!insp.entries.some((e: any) => e.type === 5), 'no type=5 entry without bytes');
+  assert(!/ID=62/.test(insp.songIni), 'no ID=62 effect without bytes');
+});

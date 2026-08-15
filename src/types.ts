@@ -35,7 +35,15 @@ export interface Line {
 /** The lyrics layouts the renderer supports. */
 export type Layout = 'scroller' | 'classic';
 
-export type BgType = 'color' | 'gradient' | 'image';
+export type BgType = 'color' | 'gradient' | 'image' | 'video';
+
+/**
+ * How an image/video background is mapped onto the canvas:
+ * - 'cover'   — preserve aspect, scale to fill, crop the excess (centered);
+ * - 'stretch' — fill the canvas exactly, distorting the aspect ratio;
+ * - 'contain' — fit entirely inside, letterboxed by the bg color/gradient.
+ */
+export type BgFit = 'cover' | 'stretch' | 'contain';
 
 /**
  * Text-level visual configuration for ONE track (font, colors, stroke/glow,
@@ -72,6 +80,11 @@ export interface Background {
   bgColor: string; // for 'color'
   bgColors: [string, string]; // for 'gradient' (top -> bottom)
   bgImageDataUrl: string | null; // for 'image' (kept as data URL for save/load)
+  /** for 'video' — filename marker; the MP4 bytes live outside the project JSON
+   * (src/lib/backgroundVideo.ts), exactly like per-role audio bytes. */
+  bgVideoFileName: string | null;
+  /** How image/video backgrounds fill the canvas. Defaults to 'cover'. */
+  bgFit: BgFit;
 }
 
 /**
@@ -192,6 +205,8 @@ export function createBackground(): Background {
     bgColor: '#0e0f1a',
     bgColors: ['#1a1033', '#0e0f1a'],
     bgImageDataUrl: null,
+    bgVideoFileName: null,
+    bgFit: 'cover',
   };
 }
 

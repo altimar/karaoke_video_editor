@@ -486,9 +486,25 @@ export function createStylePanel(): { root: HTMLElement } {
   function buildBg(bg: Background): void {
     bgCardEl.innerHTML = '';
     bgCardEl.appendChild(el('h2', { text: 'Фон (общий)' }));
-    const typeSel = selectField('Тип фона', [['color', 'Цвет'], ['gradient', 'Градиент'], ['image', 'Картинка']], bg.bgType, (v) => mutateBg((x) => (x.bgType = v as BgType)));
+    const typeSel = selectField('Тип фона', [['color', 'Цвет'], ['gradient', 'Градиент'], ['image', 'Картинка'], ['video', 'Видео (MP4)']], bg.bgType, (v) => mutateBg((x) => (x.bgType = v as BgType)));
     projFields.push({ get: (p) => p.background.bgType, field: typeSel as Field<unknown> });
     bgCardEl.appendChild(typeSel.root);
+
+    // Fit mode applies to image AND video backgrounds.
+    if (bg.bgType === 'image' || bg.bgType === 'video') {
+      const fitSel = selectField(
+        'Вписывание',
+        [
+          ['cover', 'По центру, с обрезкой'],
+          ['stretch', 'Растянуть (деформация)'],
+          ['contain', 'Вместить целиком'],
+        ],
+        bg.bgFit ?? 'cover',
+        (v) => mutateBg((x) => (x.bgFit = v as Background['bgFit'])),
+      );
+      projFields.push({ get: (p) => p.background.bgFit ?? 'cover', field: fitSel as Field<unknown> });
+      bgCardEl.appendChild(fitSel.root);
+    }
 
     if (bg.bgType === 'color') {
       const f = colorField('Цвет фона', bg.bgColor, (v) => mutateBg((x) => (x.bgColor = v)));
@@ -501,6 +517,16 @@ export function createStylePanel(): { root: HTMLElement } {
       projFields.push({ get: (p) => p.background.bgColors[1], field: bot as Field<unknown> });
       bgCardEl.appendChild(top.root);
       bgCardEl.appendChild(bot.root);
+    } else if (bg.bgType === 'video') {
+      // The video file itself is loaded from the timeline's «Фон» row.
+      bgCardEl.appendChild(
+        el('div', {
+          className: 'hint',
+          text: bg.bgVideoFileName
+            ? `Видео «${bg.bgVideoFileName}» загружено. Смена файла — на таймлайне (строка «Фон»). Цвет фона показывается до начала и после конца видео.`
+            : 'Загрузите MP4 на таймлайне (строка «Фон»). Цвет фона показывается до начала и после конца видео.',
+        }),
+      );
     } else {
       const lab = el('label', { className: 'field' });
       lab.appendChild(el('span', { text: 'Файл картинки' }));

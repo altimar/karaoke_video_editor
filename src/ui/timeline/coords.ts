@@ -11,6 +11,8 @@ import { Track } from '../../types';
 export const ROW_H = 18;
 /** px per audio-track row (waveform + envelope). */
 export const AUDIO_ROW_H = 56;
+/** px for the background pseudo-row (filmstrip / status line under all tracks). */
+export const BG_ROW_H = 30;
 /** px for the time ruler band at the top of the canvas. */
 export const RULER_H = 26;
 /** px gap below the ruler before the first row. */
@@ -45,4 +47,20 @@ export function trackIndexAtY(y: number, tracks: Track[]): number {
     if (y >= top && y <= top + h) return ti;
   }
   return -1;
+}
+
+/**
+ * Y of the background pseudo-row — a single status/hint line AFTER all track
+ * rows (it belongs to `project.background`, not to any Track). Its top is
+ * simply "below the last track", which trackTopForIndex already computes for
+ * index == tracks.length.
+ */
+export function bgRowTop(tracks: Track[]): number {
+  return trackTopForIndex(tracks.length, tracks);
+}
+
+/** True if canvas-y is within the background row. */
+export function isBgRowAtY(y: number, tracks: Track[]): boolean {
+  const top = bgRowTop(tracks);
+  return y >= top && y <= top + BG_ROW_H;
 }

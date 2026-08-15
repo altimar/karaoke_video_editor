@@ -24,6 +24,8 @@ const PROJECT_JSON = 'project.json';
 const AUDIO_PREFIX = 'audio/';
 /** Magic entry name for the background image inside the container. */
 const BG_ENTRY = 'background';
+/** Magic entry name for the background VIDEO inside the container. */
+const BG_VIDEO_ENTRY = 'background-video';
 
 /** Result of saving a project: the Blob + the chosen file name. */
 export interface SaveProjectResult {
@@ -31,10 +33,12 @@ export interface SaveProjectResult {
   filename: string;
 }
 
-/** Result of loading a project: the Project + raw audio bytes per role. */
+/** Result of loading a project: the Project + raw audio bytes per role + bg video bytes. */
 export interface LoadProjectResult {
   project: Project;
   audioByRole: Map<AudioRole, Uint8Array>;
+  /** Raw MP4 bytes of the background video, or null when none was saved. */
+  bgVideoBytes: Uint8Array | null;
 }
 
 /**
@@ -71,10 +75,14 @@ function extOf(filename: string): string {
 
 /**
  * Save a project to a `.karaokeproject` ZIP container (stored, no compression).
- * Each role's audio + the background image are stored as separate raw-byte
- * entries; the metadata JSON keeps only filenames/references.
+ * Each role's audio + the background image + the background video are stored as
+ * separate raw-byte entries; the metadata JSON keeps only filenames/references.
  */
-export function saveProject(project: Project, audioByRole: Map<AudioRole, Uint8Array>): SaveProjectResult {
+export function saveProject(
+  project: Project,
+  audioByRole: Map<AudioRole, Uint8Array>,
+  bgVideoBytes?: Uint8Array | null,
+): SaveProjectResult {
   const meta = JSON.parse(JSON.stringify(project)) as Project;
   const files: Record<string, Uint8Array> = {};
 
@@ -100,6 +108,17 @@ export function saveProject(project: Project, audioByRole: Map<AudioRole, Uint8A
     }
   }
   meta.background.bgImageDataUrl = bgMarker;
+
+  // Background video → separate entry derived from the user-facing filename
+  // (`background-video.<ext>`). The JSON KEEPS the original filename (it is
+  // shown in the UI); the entry name is deterministic on load. The bytes live
+  // OUTSIDE the project model — in backgroundVideo.ts.
+  if (meta.background.bgType === 'video' && bgVideoBytes && meta.background.bgVideoFileName) {
+    files[`${BG_VIDEO_ENTRY}.${extOf(meta.background.bgVideoFileName)}`] = bgVideoBytes;
+  } else {
+    // No bytes loaded → drop the reference so load doesn't expect an entry.
+    meta.background.bgVideoFileName = null;
+  }
 
   files[PROJECT_JSON] = strToU8(JSON.stringify(meta, null, 2));
   const zipped = zipSync(files, { level: 0 });
@@ -140,5 +159,14 @@ export function loadProject(data: Uint8Array): LoadProjectResult {
     meta.background.bgImageDataUrl = null;
   }
 
-  return { project: meta, audioByRole };
+  // Background video: bytes go back to backgroundVideo.ts (not into the JSON).
+  // The entry name is derived from the stored user-facing filename.
+  let bgVideoBytes: Uint8Array | null = null;
+  if (meta.background.bgVideoFileName) {
+    const entryName = `${BG_VIDEO_ENTRY}.${extOf(meta.background.bgVideoFileName)}`;
+    bgVideoBytes = unzipped[entryName] ?? null;
+    if (!bgVideoBytes) meta.background.bgVideoFileName = null;
+  }
+
+  return { project: meta, audioByRole, bgVideoBytes };
 }

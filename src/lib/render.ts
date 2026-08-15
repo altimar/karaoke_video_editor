@@ -13,7 +13,7 @@
  * independent modules under text_renderers/ (one per animation mode), selected
  * by each track's `style.layout`.
  */
-import { Background, Project } from '../types';
+import { Background, BgFit, Project } from '../types';
 import { RenderCtx } from './text_renderers/types';
 import { activeIndex, applyFont, buildTimings } from './text_renderers/helpers';
 import { getRenderer } from './text_renderers/registry';
@@ -23,23 +23,68 @@ export type { RenderCtx } from './text_renderers/types';
 
 // --- Background layer ---
 
-/** Draw an image covering the target box, preserving aspect ratio (CSS `cover`). */
-function drawImageCover(ctx: RenderCtx, img: HTMLImageElement, w: number, h: number): void {
-  const ir = img.width / img.height;
+/**
+ * Draw an image-like source into the target box according to the fit mode:
+ * - 'cover'   — preserve aspect, fill the box, crop the excess (centered);
+ * - 'stretch' — fill the box exactly, distorting the aspect ratio;
+ * - 'contain' — fit entirely inside, centered; the surrounding area keeps
+ *              whatever was drawn below (the bg color/gradient layer).
+ */
+function drawBgImage(ctx: RenderCtx, img: CanvasImageSource, w: number, h: number, fit: BgFit): void {
+  // <video> reports its intrinsic size via videoWidth/videoHeight; images and
+  // decoded frames via width/height. Read both defensively.
+  const s = img as { width?: number; height?: number; videoWidth?: number; videoHeight?: number };
+  const iw = s.videoWidth || s.width || 0;
+  const ih = s.videoHeight || s.height || 0;
+  if (!iw || !ih) return;
+  if (fit === 'stretch') {
+    ctx.drawImage(img, 0, 0, w, h);
+    return;
+  }
+  const ir = iw / ih;
   const br = w / h;
   let dw: number, dh: number;
-  if (ir > br) {
-    dh = h;
-    dw = h * ir;
+  if (fit === 'cover') {
+    if (ir > br) {
+      dh = h;
+      dw = h * ir;
+    } else {
+      dw = w;
+      dh = w / ir;
+    }
   } else {
-    dw = w;
-    dh = w / ir;
+    // contain
+    if (ir > br) {
+      dw = w;
+      dh = w / ir;
+    } else {
+      dh = h;
+      dw = h * ir;
+    }
   }
   ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
 }
 
-/** Draw the background (color / gradient / image) filling the whole canvas. */
-function drawBackground(ctx: RenderCtx, project: Project, bg: Background, bgImg: HTMLImageElement | null): void {
+/**
+ * Draw the background filling the whole canvas.
+ *
+ * The color/gradient layer is ALWAYS drawn first — it is the fallback that
+ * shows through wherever nothing else covers it: before the video's first
+ * frame and after it ends (a background video shorter than the song shows the
+ * background color at the tail; a longer one is trimmed by the export loop,
+ * which never renders past durationMs).
+ *
+ * `bgVideoFrame` is the current background-video frame source: the live
+ * <video> element for the preview, a decoded frame for the export. null →
+ * no video layer (not loaded, or past its end).
+ */
+function drawBackground(
+  ctx: RenderCtx,
+  project: Project,
+  bg: Background,
+  bgImg: HTMLImageElement | null,
+  bgVideoFrame: CanvasImageSource | null,
+): void {
   const { width, height } = project;
   ctx.clearRect(0, 0, width, height);
   if (bg.bgType === 'gradient') {
@@ -51,7 +96,8 @@ function drawBackground(ctx: RenderCtx, project: Project, bg: Background, bgImg:
     ctx.fillStyle = bg.bgType === 'image' && bgImg ? '#000' : bg.bgColor;
   }
   ctx.fillRect(0, 0, width, height);
-  if (bg.bgType === 'image' && bgImg) drawImageCover(ctx, bgImg, width, height);
+  if (bg.bgType === 'image' && bgImg) drawBgImage(ctx, bgImg, width, height, bg.bgFit ?? 'cover');
+  if (bg.bgType === 'video' && bgVideoFrame) drawBgImage(ctx, bgVideoFrame, width, height, bg.bgFit ?? 'cover');
 }
 
 // Cache decoded background images by data URL to avoid re-decoding each frame.
@@ -89,14 +135,19 @@ function resolveSettings(layout: string, stored: Record<string, Record<string, n
 /**
  * Render one full frame at timeMs. Draws the shared background once, then renders
  * every text track on top, in array order. Tracks are independent and may overlap.
+ *
+ * `bgVideoFrame` (optional): the background-video frame source at timeMs — the
+ * preview passes its synced <video> element, the MP4 export passes the decoded
+ * frame. Omitted/null → the color/gradient fallback shows (also what happens
+ * when the video is shorter than the song).
  */
-export function renderFrame(ctx: RenderCtx, timeMs: number, project: Project): void {
+export function renderFrame(ctx: RenderCtx, timeMs: number, project: Project, bgVideoFrame?: CanvasImageSource | null): void {
   if (project.tracks.length === 0) return;
 
   // 1. Shared background (drawn once for the whole frame).
   const bg = project.background;
   const bgImg = getBgImage(bg);
-  drawBackground(ctx, project, bg, bgImg);
+  drawBackground(ctx, project, bg, bgImg, bgVideoFrame ?? null);
 
   // 2. Render each text track independently, on top of the background.
   //    Audio tracks have no visual representation in the frame — skip them.

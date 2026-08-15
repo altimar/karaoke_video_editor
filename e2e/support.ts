@@ -15,6 +15,9 @@ export interface AppState {
   /** engine: decoded buffer duration per role (seconds, -1 when not loaded) */
   bufferDurationByRole: Record<string, number>;
   engineDurationMs: number;
+  /** background: type + video filename */
+  bgType: string;
+  bgVideoFileName: string | null;
 }
 
 export async function getAppState(page: Page): Promise<AppState> {
@@ -37,6 +40,8 @@ export async function getAppState(page: Page): Promise<AppState> {
       fileNameByRole,
       bufferDurationByRole,
       engineDurationMs: engine.durationMs,
+      bgType: p.background.bgType,
+      bgVideoFileName: p.background.bgVideoFileName ?? null,
     };
   });
 }
@@ -46,6 +51,29 @@ export async function expectToast(page: Page, kind: 'ok' | 'err' | 'info', text:
   const cls = kind === 'info' ? '.toast' : `.toast.${kind}`;
   const { expect } = await import('@playwright/test');
   await expect(page.locator(cls, { hasText: text })).toBeVisible({ timeout: 10_000 });
+}
+
+/**
+ * Assert that a locator is fully inside the viewport.
+ *
+ * Playwright's `toBeVisible()` only checks a non-empty bounding box — an
+ * element clipped away by an `overflow: hidden` container still "passes", and
+ * `click()` auto-scrolls to it, so a layout regression (e.g. the Фон row cut
+ * off below the screen) would go unnoticed. This helper catches exactly that.
+ */
+export async function expectFullyInViewport(page: Page, selector: string): Promise<void> {
+  const { expect } = await import('@playwright/test');
+  await expect(async () => {
+    const box = await page.locator(selector).first().boundingBox();
+    if (!box) throw new Error(`${selector}: no bounding box (not rendered)`);
+    const vp = page.viewportSize()!;
+    const overshoot = Math.max(0, box.y + box.height - vp.height);
+    if (box.y < 0 || box.y + box.height > vp.height) {
+      throw new Error(
+        `${selector}: outside the viewport (y=${box.y.toFixed(0)}, bottom=${(box.y + box.height).toFixed(0)}, viewport=${vp.height}, overshoot=${overshoot.toFixed(0)}px)`,
+      );
+    }
+  }).toPass({ timeout: 5_000 });
 }
 
 /**

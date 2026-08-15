@@ -41,6 +41,13 @@ export function collectKfnWarnings(project: Project): string[] {
   if (!minus || !minus.audioFileName) {
     warnings.push('Дорожка «минус» пуста — экспорт KaraFun будет без инструментала (Source).');
   }
+  // Video background: we embed MP4, but the KFN spec only lists wmv/avi/mpg
+  // for type-5 files — KaraFun's player may refuse to play it.
+  if (project.background.bgType === 'video' && project.background.bgVideoFileName) {
+    warnings.push(
+      'Видео-фон вшивается как MP4; KaraFun официально поддерживает только WMV/AVI/MPG — плеер KaraFun может его не показать.',
+    );
+  }
   for (const track of textTracks) {
     if (track.style.layout !== 'scroller' && track.style.layout !== 'classic') {
       warnings.push(
@@ -285,10 +292,11 @@ function buildEffectSection(track: TextTrack, effIndex: number, textTrackIndex: 
 }
 
 /**
- * Build Song.ini from ALL text tracks + optional background image. Each text
- * track becomes its own [EffN] effect (ID=1 for the first, ID=2 for the rest);
- * a background image, if present, is written as an [Eff1] ID=51 effect BEFORE
- * the text effects (matching KaraFun's own file order). KaraFun supports at
+ * Build Song.ini from ALL text tracks + optional background image/video. Each
+ * text track becomes its own [EffN] effect (ID=1 for the first, ID=2 for the
+ * rest); a background image, if present, is written as an [Eff1] ID=51 effect
+ * BEFORE the text effects (matching KaraFun's own file order); a background
+ * video is written as an ID=62 effect the same way. KaraFun supports at
  * most two text effects, so more than two tracks produce a warning (they are
  * still written as additional effects, at the user's own risk).
  */
@@ -296,6 +304,7 @@ function buildSongIni(
   tracks: TextTrack[],
   audioFileName: string,
   bgImageFileName: string | null,
+  bgVideoFileName: string | null,
   backAudioFileName: string | null,
 ): { ini: string; warnings: string[] } {
   const warnings: string[] = [];
@@ -314,8 +323,8 @@ function buildSongIni(
   lines.push('Copyright=');
   lines.push('Comment=');
   lines.push(`Source=1,I,${audioFileName}`);
-  // EffectCount covers ALL effects: background image + text tracks.
-  lines.push(`EffectCount=${tracks.length + (bgImageFileName ? 1 : 0)}`);
+  // EffectCount covers ALL effects: background image/video + text tracks.
+  lines.push(`EffectCount=${tracks.length + (bgImageFileName ? 1 : 0) + (bgVideoFileName ? 1 : 0)}`);
   lines.push('LanguageID=');
   lines.push('DiffMen=0');
   lines.push('DiffWomen=0');
@@ -353,6 +362,32 @@ function buildSongIni(
     lines.push('OffsetX=0');
     lines.push('OffsetY=0');
     lines.push('Depth=0');
+    lines.push('NbAnim=0');
+    lines.push('');
+    effIndex++;
+  }
+
+  // Background video effect (ID=62), same first-position convention. We embed
+  // MP4 (type=5 file); KaraFun's own files use WMV, so the player may refuse —
+  // a warning is emitted in collectKfnWarnings.
+  if (bgVideoFileName) {
+    lines.push(`[Eff${effIndex + 1}]`);
+    lines.push('ID=62');
+    lines.push('InPractice=0');
+    lines.push('Enabled=-1');
+    lines.push('Locked=0');
+    lines.push(`VideoFile=${bgVideoFileName}`);
+    lines.push('PlayAtStart=1');
+    lines.push('SeekTime=0');
+    // Trim semantics live on OUR side (the export renders exactly
+    // durationMs); inside KaraFun the video plays once, no freeze at the end.
+    lines.push('LoopVideo=0');
+    lines.push('DisplayLastFrame=0');
+    lines.push('ZoomScale=100');
+    lines.push('Filter=#FFFFFFFF');
+    lines.push('AlphaBlending=Opacity');
+    lines.push('OffsetX=0');
+    lines.push('OffsetY=0');
     lines.push('NbAnim=0');
     lines.push('');
     effIndex++;
@@ -426,6 +461,8 @@ export interface KfnExportOptions {
   signal?: AbortSignal;
   /** Called with 0..1 as the file is built. */
   onProgress?: (fraction: number) => void;
+  /** Raw MP4 bytes of the background video (required to embed an ID=62 effect). */
+  bgVideoBytes?: Uint8Array | null;
 }
 
 /**
@@ -477,7 +514,19 @@ export async function exportToKfn(
   if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
     bgImageFileName = 'background.' + (project.background.bgImageDataUrl.match(/data:image\/([a-z0-9]+);/i)?.[1] ?? 'jpg');
   }
-  const { ini: songIni, warnings } = buildSongIni(textTracks, audioFileName, bgImageFileName, backAudioFileName);
+  // Background video: embedded as a type=5 container file referenced by an
+  // ID=62 effect. Only when actual bytes are available.
+  const bgVideoBytes = options?.bgVideoBytes ?? null;
+  const bgVideoFileName =
+    project.background.bgType === 'video' && bgVideoBytes && project.background.bgVideoFileName
+      ? 'background.' + (project.background.bgVideoFileName.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'mp4')
+      : null;
+  const { ini: songIni, warnings } = buildSongIni(textTracks, audioFileName, bgImageFileName, bgVideoFileName, backAudioFileName);
+  if (bgVideoFileName) {
+    warnings.push(
+      'Видео-фон вшит как MP4; KaraFun официально поддерживает только WMV/AVI/MPG — плеер KaraFun может его не показать.',
+    );
+  }
   const songIniBytes = new TextEncoder().encode(songIni);
   report(0.1);
   await yield_();
@@ -491,6 +540,9 @@ export async function exportToKfn(
   if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
     const decoded = decodeDataUrl(project.background.bgImageDataUrl);
     if (decoded) entries.push({ filename: decoded.filename, fileType: 3, data: decoded.bytes });
+  }
+  if (bgVideoFileName && bgVideoBytes) {
+    entries.push({ filename: bgVideoFileName, fileType: 5, data: bgVideoBytes });
   }
   entries.push({ filename: 'Song.ini', fileType: 1, data: songIniBytes });
   report(0.35);

@@ -295,7 +295,8 @@ textarea.lyrics {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 340px;
+  /* Fits the default track set (1 text + 4 audio) + the Фон pseudo-row. */
+  max-height: 400px;
   /* Tapping the canvas/tracks shouldn't flash the blue tap highlight or start a
      text selection — the timeline is a pure interaction surface. */
   -webkit-tap-highlight-color: transparent;

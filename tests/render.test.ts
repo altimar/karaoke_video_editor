@@ -31,7 +31,7 @@ function makeFakeCtx(measure = 40) {
   };
   const ctx: any = {
     clearRect: (...a: any[]) => calls.push(['clearRect', ...a]),
-    fillRect: (...a: any[]) => calls.push(['fillRect', ...a]),
+    fillRect: (...a: any[]) => calls.push(['fillRect', ...a, state.fillStyle]),
     drawImage: (...a: any[]) => calls.push(['drawImage', ...a]),
     createLinearGradient: (...a: any[]) => {
       calls.push(['createLinearGradient', ...a]);
@@ -480,4 +480,86 @@ test('outline color follows fill state (active vs inactive stroke colors)', () =
   const b = strokes.find((c) => c[1] === 'B');
   assert(a && a[4] === '#112233', `filled syllable outline = strokeColorActive (got ${a?.[4]})`);
   assert(b && b[4] === '#445566', `unfilled syllable outline = strokeColorInactive (got ${b?.[4]})`);
+});
+
+// --- Video background: the color layer is the fallback, the video frame covers it ---
+
+/** Fake frame source with videoWidth/videoHeight like a <video> element. */
+function fakeVideoFrame(w = 320, h = 240): any {
+  return { videoWidth: w, videoHeight: h };
+}
+
+test('video bg: frame drawn OVER the fallback color (cover)', () => {
+  const p = JSON.parse(JSON.stringify(project));
+  p.background = { ...p.background, bgType: 'video', bgVideoFileName: 'bg.mp4' };
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 500, p, fakeVideoFrame(320, 240));
+  const draws = rec.calls.filter((c) => c[0] === 'drawImage');
+  assert(draws.length === 1, `video frame drawn once (got ${draws.length})`);
+  // drawImage args: (img, x, y, dw, dh) → indices 2..5.
+  // Cover math for a 320×240 (4:3, ratio 1.33) frame in a 1920×1080 (16:9,
+  // ratio 1.78) canvas: the video is proportionally TALLER → full canvas
+  // width, height = 1920 / (4/3) = 1440, cropped & centered vertically.
+  const x = draws[0][2], y = draws[0][3], dw = draws[0][4], dh = draws[0][5];
+  assert(dw === 1920 && dh === 1440, `cover preserves aspect (dw=${dw}, dh=${dh})`);
+  assert(x === 0 && y === (1080 - 1440) / 2, `centered vertically (x=${x}, y=${y})`);
+  // The color fill still happened underneath (fallback for the video's tail).
+  const fills = rec.calls.filter((c) => c[0] === 'fillRect');
+  assert(fills.length >= 1 && fills[0][fills[0].length - 1] === '#0e0f1a', 'fallback color drawn underneath');
+});
+
+test('video bg: no frame → only the fallback color (video shorter than song)', () => {
+  const p = JSON.parse(JSON.stringify(project));
+  p.background = { ...p.background, bgType: 'video', bgVideoFileName: 'bg.mp4' };
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 5000, p, null); // video ended, no frame available
+  assert(count(rec.calls, 'drawImage') === 0, 'no video frame drawn');
+  const fills = rec.calls.filter((c) => c[0] === 'fillRect');
+  assert(fills.length >= 1 && fills[0][fills[0].length - 1] === '#0e0f1a', 'fallback is bgColor');
+});
+
+test('video bg: stretch mode fills the canvas exactly (aspect distorted)', () => {
+  const p = JSON.parse(JSON.stringify(project));
+  p.background = { ...p.background, bgType: 'video', bgVideoFileName: 'bg.mp4', bgFit: 'stretch' };
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 500, p, fakeVideoFrame(320, 240));
+  const draws = rec.calls.filter((c) => c[0] === 'drawImage');
+  assert(draws.length === 1, 'video frame drawn once');
+  // drawImage args: (img, x, y, dw, dh) → indices 2..5.
+  const x = draws[0][2], y = draws[0][3], dw = draws[0][4], dh = draws[0][5];
+  assert(x === 0 && y === 0 && dw === 1920 && dh === 1080, `stretch fills the canvas (x=${x}, y=${y}, dw=${dw}, dh=${dh})`);
+});
+
+test('video bg: contain mode fits entirely (letterboxed by the color layer)', () => {
+  const p = JSON.parse(JSON.stringify(project));
+  p.background = { ...p.background, bgType: 'video', bgVideoFileName: 'bg.mp4', bgFit: 'contain' };
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 500, p, fakeVideoFrame(320, 240));
+  const draws = rec.calls.filter((c) => c[0] === 'drawImage');
+  assert(draws.length === 1, 'video frame drawn once');
+  const x = draws[0][2], y = draws[0][3], dw = draws[0][4], dh = draws[0][5];
+  // 320×240 (4:3) into 1920×1080 (16:9): contain → full canvas width,
+  // height = 1920 / (4/3) = 1440 would EXCEED the box, so it's height-bound:
+  // dh = 1080, dw = 1080 * 4/3 = 1440, centered horizontally.
+  assert(dw === 1440 && dh === 1080, `contain fits inside (dw=${dw}, dh=${dh})`);
+  assert(x === (1920 - 1440) / 2 && y === 0, `centered (x=${x}, y=${y})`);
+});
+
+test('video bg: default fit is cover when bgFit is missing (legacy project JSON)', () => {
+  const p = JSON.parse(JSON.stringify(project));
+  p.background = { ...p.background, bgType: 'video', bgVideoFileName: 'bg.mp4', bgFit: undefined };
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 500, p, fakeVideoFrame(320, 240));
+  const draws = rec.calls.filter((c) => c[0] === 'drawImage');
+  // cover math: 4:3 into 16:9 → dw=1920, dh=1440 (height-bound scale-up + crop).
+  assert(draws[0][4] === 1920 && draws[0][5] === 1440, `undefined bgFit falls back to cover (dw=${draws[0][4]}, dh=${draws[0][5]})`);
+});
+
+test('video bg: bgType video WITHOUT a frame param behaves like color', () => {
+  const p = JSON.parse(JSON.stringify(project));
+  p.background = { ...p.background, bgType: 'video', bgVideoFileName: 'bg.mp4' };
+  const rec = makeFakeCtx(40);
+  renderFrame(rec.ctx, 0, p); // caller passed nothing
+  assert(count(rec.calls, 'drawImage') === 0, 'no crash, no video layer');
+  assert(count(rec.calls, 'fillRect') === 1, 'color layer drawn');
 });

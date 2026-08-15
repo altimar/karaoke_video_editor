@@ -12,13 +12,19 @@
 import {
   Output,
   Mp4OutputFormat,
+  Mp4InputFormat,
   BufferTarget,
   CanvasSource,
   AudioBufferSource,
   Quality,
+  Input,
+  BlobSource,
+  VideoSampleSink,
+  type VideoSample,
 } from 'mediabunny';
 import { Project, TextTrack, Track, VolumePoint, AudioRole, getAudioTrackByRole, isRoleAudible } from '../types';
 import { renderFrame } from './render';
+import { getBgVideoBytes } from './backgroundVideo';
 
 /**
  * Build a copy of the project scaled to the target resolution, multiplying all
@@ -222,10 +228,35 @@ export async function exportToMp4(
     if (signal?.aborted) throw new ExportCanceledError('Экспорт отменён');
   };
 
-  await output.start();
-
   const frameDur = 1 / fps; // seconds
   const totalFrames = Math.max(1, Math.ceil(durationSec * fps));
+
+  // --- Background video source (when bgType === 'video' and bytes exist) ---
+  // Demuxed + decoded via mediabunny: samplesAtTimestamps() walks the frame
+  // timestamps monotonically, decoding each packet at most once. Past the
+  // video's end it yields null → the color/gradient fallback shows through
+  // (drawBackground always paints it first). A longer video is trimmed
+  // naturally: the loop stops at the project's duration.
+  let bgInput: Input | null = null;
+  let bgSampleIter: AsyncGenerator<VideoSample | null> | null = null;
+  let bgSample: VideoSample | null = null;
+  const bgVideoBytes = renderProject.background.bgType === 'video' ? getBgVideoBytes() : null;
+  if (bgVideoBytes) {
+    bgInput = new Input({
+      formats: [new Mp4InputFormat()],
+      source: new BlobSource(new Blob([bgVideoBytes.buffer as ArrayBuffer], { type: 'video/mp4' })),
+    });
+    const videoTrack = await bgInput.getPrimaryVideoTrack();
+    if (videoTrack) {
+      const sink = new VideoSampleSink(videoTrack);
+      function* frameTimes(): Generator<number> {
+        for (let i = 0; i < totalFrames; i++) yield i / fps;
+      }
+      bgSampleIter = sink.samplesAtTimestamps(frameTimes());
+    }
+  }
+
+  await output.start();
 
   try {
     // Render every frame. (We can't skip "static" frames: layouts like the
@@ -233,7 +264,13 @@ export async function exportToMp4(
     for (let i = 0; i < totalFrames; i++) {
       checkCanceled();
       const timeMs = (i / fps) * 1000;
-      renderFrame(ctx, timeMs, renderProject);
+      if (bgSampleIter) {
+        // Advance to this frame's background video sample (null past its end).
+        bgSample?.close();
+        const next = await bgSampleIter.next();
+        bgSample = next.done ? null : next.value;
+      }
+      renderFrame(ctx, timeMs, renderProject, bgSample ? bgSample.toCanvasImageSource() : null);
       const tSec = i / fps;
       // Add waits for the encoder when needed → respects backpressure, keeps memory bounded.
       await videoSource.add(tSec, frameDur, { keyFrame: i % (fps * 5) === 0 });
@@ -262,6 +299,10 @@ export async function exportToMp4(
     // On cancel or error, release the encoder/muxer resources and propagate.
     await output.cancel().catch(() => {});
     throw err;
+  } finally {
+    // Release the background video decoder resources.
+    bgSample?.close();
+    bgInput?.dispose();
   }
 
   if (!target.buffer) throw new ExportError('Экспорт не произвёл данных.');

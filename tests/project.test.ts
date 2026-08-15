@@ -85,9 +85,34 @@ test('no audio: still saves/loads, audioByRole is empty', async () => {
 
 test('no background image: bgImageDataUrl is null, no bg entry', async () => {
   const noBg = JSON.parse(JSON.stringify(project));
-  noBg.background = { bgType: 'color', bgColor: '#0e0f1a', bgColors: ['#000', '#111'], bgImageDataUrl: null };
+  noBg.background = { bgType: 'color', bgColor: '#0e0f1a', bgColors: ['#000', '#111'], bgImageDataUrl: null, bgVideoFileName: null };
   const { blob: b3 } = saveProject(noBg, fakeAudioMap);
   const r3 = loadProject(new Uint8Array(await b3.arrayBuffer()));
   assert(r3.project.background.bgImageDataUrl === null, 'no image → bgImageDataUrl null');
   assert(r3.project.background.bgType === 'color', 'bg type color preserved');
+});
+
+test('video background: bytes stored as background-video.<ext>, filename preserved', async () => {
+  const withVideo = JSON.parse(JSON.stringify(project));
+  withVideo.background = { ...withVideo.background, bgType: 'video', bgImageDataUrl: null, bgVideoFileName: 'концерт.mp4' };
+  const mp4 = new Uint8Array(500).fill(0x61);
+  const { blob } = saveProject(withVideo, new Map(), mp4);
+  const r = loadProject(new Uint8Array(await blob.arrayBuffer()));
+
+  // Bytes come back out-of-model (they belong to backgroundVideo.ts).
+  assert(!!r.bgVideoBytes, 'bg video bytes extracted');
+  assert(r.bgVideoBytes!.length === mp4.length, `bg video bytes in full (got ${r.bgVideoBytes?.length})`);
+  assert(r.bgVideoBytes![0] === 0x61, 'bg video content preserved');
+  // The user-facing filename survives (it's shown in the UI).
+  assert(r.project.background.bgVideoFileName === 'концерт.mp4', `filename preserved (got "${r.project.background.bgVideoFileName}")`);
+  assert(r.project.background.bgType === 'video', 'bg type video preserved');
+});
+
+test('video background: no bytes → reference dropped on save/load', async () => {
+  const stale = JSON.parse(JSON.stringify(project));
+  stale.background = { ...stale.background, bgType: 'video', bgImageDataUrl: null, bgVideoFileName: 'gone.mp4' };
+  const { blob } = saveProject(stale, new Map(), null);
+  const r = loadProject(new Uint8Array(await blob.arrayBuffer()));
+  assert(r.bgVideoBytes === null, 'no bg video bytes');
+  assert(r.project.background.bgVideoFileName === null, 'stale bgVideoFileName cleared');
 });

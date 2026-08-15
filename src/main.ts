@@ -10,6 +10,7 @@ import { createStylePanel } from './ui/stylePanel';
 import { createTimeline } from './ui/timeline';
 import { createPropsSheet } from './ui/propsSheet';
 import { canExport } from './lib/export';
+import { peekBgFilmstrip } from './lib/bgThumbnails';
 import { store } from './state/store';
 import { audioEngine } from './lib/audioEngine';
 import { getAudioTracks } from './types';
@@ -117,9 +118,14 @@ function main(): void {
   // E2E test hook (Playwright): read-only access to the app state & audio
   // engine from page.evaluate, so tests can assert on the project model
   // instead of scraping DOM.
-  const hooks = window as unknown as { __store: typeof store; __audioEngine: typeof audioEngine };
+  const hooks = window as unknown as {
+    __store: typeof store;
+    __audioEngine: typeof audioEngine;
+    __bgFilmstrip: typeof peekBgFilmstrip;
+  };
   hooks.__store = store;
   hooks.__audioEngine = audioEngine;
+  hooks.__bgFilmstrip = peekBgFilmstrip;
 }
 
 function helpCard(): HTMLElement {

@@ -22,9 +22,14 @@ import {
   getAudioBytesMap,
 } from '../../lib/audioLoader';
 import { separateVocals, getSeparationStatus } from '../../lib/separation';
+import { loadBgVideo, clearBgVideo, getBgVideoBytes } from '../../lib/backgroundVideo';
+import { ensureBgFilmstrip, setFilmstripOnReady } from '../../lib/bgThumbnails';
+import { invalidateBgImageCache } from '../../lib/render';
 import { openSeparationDialog } from '../separationDialog';
 import type { ToastFn } from '../controls';
-import { RULER_H, TOP_PAD, TRACK_PAD, rowHeight, trackTopForIndex, trackIndexAtY } from './coords';
+import {
+  RULER_H, TOP_PAD, TRACK_PAD, BG_ROW_H, rowHeight, trackTopForIndex, trackIndexAtY, bgRowTop, isBgRowAtY,
+} from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
 import { textView, pickMarker } from './textView';
 import { audioView } from './audioView';
@@ -196,6 +201,12 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       }
     }
 
+    // 2.5 The background pseudo-row (below all tracks) opens the bg picker.
+    if (isBgRowAtY(y, tracks)) {
+      openBgPicker();
+      return;
+    }
+
     // 3. Fallback: seek.
     audioEngine.seek(xToMs(x));
   });
@@ -320,6 +331,8 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     playheadMs = t;
     draw();
   });
+  // Filmstrip decode is async — redraw the bg row once the thumbs are ready.
+  setFilmstripOnReady(() => scheduleDraw());
   store.subscribe(() => {
     renderGutter();
     draw();
@@ -371,7 +384,8 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       project.tracks.map((t) =>
         `${t.id}:${t.type}:${t.name}:${t.type === 'audio' ? `${t.audioFileName}:${(t as AudioTrack).muted ? 'M' : ''}:${(t as AudioTrack).solo ? 'S' : ''}` : ''}`,
       ).join('|') +
-      '@' + project.activeTrackId;
+      '@' + project.activeTrackId +
+      '@bg:' + project.background.bgType + ':' + (project.background.bgVideoFileName ?? '') + ':' + (project.background.bgImageDataUrl ? '1' : '');
     if (sig === lastGutterSig) return;
     lastGutterSig = sig;
     gutter.innerHTML = '';
@@ -514,6 +528,41 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
 
       gutter.appendChild(th);
     }
+
+    // Background pseudo-row header: click loads an image or an mp4; × resets
+    // to the color background (color/gradient themselves live in the style panel).
+    const bg = project.background;
+    const bgHead = document.createElement('div');
+    bgHead.className = 'timeline-track-head bg';
+    bgHead.style.height = BG_ROW_H + TRACK_PAD + 'px';
+    bgHead.title = 'Загрузить фон: картинку или MP4-видео';
+    bgHead.dataset.testid = 'track-head-background';
+    const bgName = document.createElement('span');
+    bgName.className = 'timeline-track-name';
+    bgName.textContent = '🖼 Фон';
+    bgHead.appendChild(bgName);
+    if (bg.bgType === 'image' || bg.bgType === 'video') {
+      const bgDel = document.createElement('span');
+      bgDel.className = 'timeline-track-del';
+      bgDel.textContent = '×';
+      bgDel.title = 'Сбросить фон до цвета';
+      bgDel.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (bg.bgType === 'video') clearBgVideo();
+        store.mutate((p) => {
+          p.background.bgType = 'color';
+          p.background.bgImageDataUrl = null;
+          p.background.bgVideoFileName = null;
+        });
+        invalidateBgImageCache();
+      });
+      bgHead.appendChild(bgDel);
+    }
+    bgHead.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('.timeline-track-del')) return;
+      openBgPicker();
+    });
+    gutter.appendChild(bgHead);
   }
 
   /** Hidden file input reused for loading audio into a role. */
@@ -539,6 +588,49 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
   function openAudioPicker(track: AudioTrack): void {
     pendingRole = track.role;
     audioInput.click();
+  }
+
+  // --- Background pseudo-row: hidden file input (image or mp4 video) ---
+  const bgInput = document.createElement('input');
+  bgInput.type = 'file';
+  bgInput.accept = 'image/*,video/mp4,.mp4';
+  bgInput.style.display = 'none';
+  bgInput.dataset.testid = 'input-bg-load';
+  bgInput.addEventListener('change', async () => {
+    const f = bgInput.files?.[0];
+    if (!f) return;
+    const isVideo = f.type.startsWith('video/') || /\.mp4$/i.test(f.name);
+    if (isVideo) {
+      const bytes = new Uint8Array(await f.arrayBuffer());
+      loadBgVideo(bytes);
+      store.mutate((p) => {
+        p.background.bgType = 'video';
+        p.background.bgVideoFileName = f.name;
+      });
+    } else {
+      // Image — reuse the data-URL path the style panel uses.
+      const dataUrl = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result));
+        r.onerror = () => rej(r.error);
+        r.readAsDataURL(f);
+      }).catch(() => null);
+      if (!dataUrl) {
+        toast('Не удалось прочитать файл фона', 'err');
+        return;
+      }
+      store.mutate((p) => {
+        p.background.bgType = 'image';
+        p.background.bgImageDataUrl = dataUrl;
+      });
+      invalidateBgImageCache();
+    }
+    bgInput.value = '';
+  });
+  scroll.parentElement?.appendChild(bgInput);
+
+  function openBgPicker(): void {
+    bgInput.click();
   }
 
   /**
@@ -590,9 +682,10 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const project = store.getProject();
     const dpr = window.devicePixelRatio || 1;
     const tracks = project.tracks;
-    // Height: ruler + one row per track.
+    // Height: ruler + one row per track + the background pseudo-row.
     let cssH = RULER_H + TOP_PAD;
     for (const t of tracks) cssH += rowHeight(t) + TRACK_PAD;
+    cssH += BG_ROW_H + TRACK_PAD;
     cssH += 4;
     // The canvas is viewport-wide; the spacer carries the full content width so
     // the scroll container can pan. canvas backing store scales only with the
@@ -645,6 +738,80 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         ctx.fillRect(Math.max(0, left), rowY - 2, Math.min(cw, right) - Math.max(0, left), rowHeight(track) + 4);
       }
       view.draw(ctx, track, rowY, env);
+    }
+
+    // Background pseudo-row: filmstrip for a video bg, status text otherwise.
+    const bgY = bgRowTop(tracks);
+    const bg = project.background;
+    ctx.fillStyle = '#2a2e42';
+    const bgSepX = Math.max(0, Math.floor(left));
+    const bgSepW = Math.min(cw, right) - bgSepX;
+    ctx.fillRect(bgSepX, bgY + BG_ROW_H, Math.max(0, bgSepW), 1);
+
+    let drewFilmstrip = false;
+    if (bg.bgType === 'video') {
+      const bytes = getBgVideoBytes();
+      if (bytes) {
+        const strip = ensureBgFilmstrip(bytes);
+        if (strip && strip.thumbs.length > 0) {
+          drewFilmstrip = true;
+          const { thumbs } = strip;
+          // Thumbnails keep their NATIVE aspect (height = row, width from the
+          // frame's ratio) and are left-anchored at their timestamp. When the
+          // zoom level makes them wider than the sampling interval, a fixed
+          // INDEX STRIDE is used — NOT a viewport-relative skip — so the drawn
+          // subset stays identical while scrolling (a viewport-relative skip
+          // made thumbnails visually "jump" as the scroll position decided
+          // which of the overlapping frames to drop).
+          const GAP = 4; // min px between neighboring thumbnails
+          const pxPerSec = contentWidth() / durationMs() * 1000;
+          const spacing = strip.intervalSec * pxPerSec; // px between samples
+          let maxW = 1;
+          for (const th of thumbs) maxW = Math.max(maxW, Math.round((th.canvas.width / th.canvas.height) * BG_ROW_H));
+          const stride = Math.max(1, Math.ceil((maxW + GAP) / spacing));
+          for (let i = 0; i < thumbs.length; i += stride) {
+            const c = thumbs[i].canvas;
+            const tw = Math.max(1, Math.round((c.width / c.height) * BG_ROW_H));
+            const x = msToX(thumbs[i].tSec * 1000);
+            if (x + tw < left || x > right) continue; // cull off-screen only
+            ctx.drawImage(c, x, bgY, tw, BG_ROW_H);
+          }
+          // Where the video ends earlier than the song, show the fallback
+          // color zone (the bg color visible in preview/export after the end).
+          const endX = msToX(Math.min(strip.durationSec * 1000, durationMs()));
+          if (endX < right) {
+            ctx.fillStyle = bg.bgColor;
+            ctx.fillRect(Math.max(endX, left), bgY, right - Math.max(endX, left), BG_ROW_H);
+            ctx.fillStyle = 'rgba(0,0,0,0.35)';
+            ctx.fillRect(endX, bgY, 1, BG_ROW_H);
+            ctx.fillStyle = '#5a5f7e';
+            ctx.font = '10px system-ui';
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'left';
+            if (right - Math.max(endX, left) > 70) ctx.fillText('цвет фона', Math.max(endX, left) + 6, bgY + BG_ROW_H / 2);
+          }
+        }
+      }
+    }
+    if (!drewFilmstrip) {
+      ctx.fillStyle = '#5a5f7e';
+      ctx.font = '11px system-ui';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      const bgLabel =
+        bg.bgType === 'video'
+          ? `фон: видео (${bg.bgVideoFileName ?? 'bg.mp4'})${getBgVideoBytes() ? ' — кадры готовятся…' : ''}`
+          : bg.bgType === 'image'
+            ? 'фон: картинка'
+            : bg.bgType === 'gradient'
+              ? 'фон: градиент'
+              : 'фон: цвет';
+      ctx.fillText(
+        bg.bgType === 'video' || bg.bgType === 'image' ? bgLabel + ' — клик сменить' : 'фон — клик: картинка или MP4',
+        env.width / 2,
+        bgY + BG_ROW_H / 2,
+      );
+      ctx.textAlign = 'left';
     }
 
     // Playhead (red bar sweeping across the timeline).

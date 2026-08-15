@@ -9,9 +9,29 @@
 import { store } from '../state/store';
 import { audioEngine } from '../lib/audioEngine';
 import { renderFrame } from '../lib/render';
+import { bgVideoEl } from '../lib/backgroundVideo';
 import { timingCapture } from '../lib/timing';
 import { flatSyllables } from '../lib/textParser';
 import { getActiveTextTrack } from '../types';
+
+/**
+ * Keep the background <video> element glued to the audio clock: play together,
+ * pause together, and re-seek when they drift apart (e.g. after an audio seek).
+ * Tolerances keep this cheap: while playing with a small drift the video is
+ * left to run on its own clock (no per-frame seeks).
+ */
+function syncBgVideo(timeMs: number, playing: boolean): void {
+  const v = bgVideoEl();
+  if (!v || !v.src) return;
+  const t = timeMs / 1000;
+  if (playing) {
+    if (v.paused) void v.play().catch(() => { /* autoplay rejection — ignore */ });
+    if (Math.abs(v.currentTime - t) > 0.3) v.currentTime = t;
+  } else {
+    if (!v.paused) v.pause();
+    if (Math.abs(v.currentTime - t) > 0.05) v.currentTime = t;
+  }
+}
 
 export function createPreview(): { wrap: HTMLElement; dispose: () => void } {
   const wrap = document.createElement('div');
@@ -64,8 +84,15 @@ export function createPreview(): { wrap: HTMLElement; dispose: () => void } {
     const p = store.getProject();
     syncSize();
     // While recording, keep showing live time so the user sees fills land as they tap.
-    const timeMs = audioEngine.isPlaying ? audioEngine.currentTimeMs : lastTimeMs;
-    renderFrame(ctx, timeMs, p);
+    const playing = audioEngine.isPlaying;
+    const timeMs = playing ? audioEngine.currentTimeMs : lastTimeMs;
+    // The background video (when bgType === 'video') is the live frame source.
+    if (p.background.bgType === 'video') {
+      syncBgVideo(timeMs, playing);
+      renderFrame(ctx, timeMs, p, bgVideoEl());
+    } else {
+      renderFrame(ctx, timeMs, p);
+    }
     rafId = requestAnimationFrame(loop);
   }
 
