@@ -21,6 +21,8 @@
     "@playwright/test": "^1.62.1",
     "esbuild": "^0.28.1",
     "jsdom": "^30.0.1",
+    "onnx-proto": "^8.0.1",
+    "onnxruntime-node": "^1.27.0",
     "typescript": "^7.0.2",
     "vite": "^8.2.0",
     "vitest": "^4.1.10"

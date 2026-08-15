@@ -67,6 +67,8 @@ src/
     backgroundVideo.ts     — видео-фон: байты вне модели + скрытый <video> для превью
     bgThumbnails.ts        — фильмстрип видео-фона для таймлайна (офлайн-декод WebCodecs)
     timing.ts              — контроллер съёмки таймингов активной дорожки (Space → startMs)
+    forcedAlign.ts         — авторасстановка таймингов: wav2vec2 CTC forced alignment (модель, чанковый инференс)
+    alignment/ctc.ts       — чистая математика выравнивания: токенизация, CTC Viterbi, распределение слогов
     textParser.ts          — парсер текста, сериализация, mergeTimings, flatSyllables
     waveform.ts            — расчёт пиков waveform из AudioBuffer (кешируется)
     export.ts              — экспорт MP4: WebCodecs + Mediabunny, качество, прогресс

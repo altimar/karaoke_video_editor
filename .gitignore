@@ -13,3 +13,9 @@ e2e/_*.mjs
 e2e/_*.ts
 test-results/
 playwright-report/
+
+# Alignment eval: temp bundles + run results (fixtures ARE committed)
+eval/_*.mjs
+eval/_*.ts
+eval/results/
+public/local-models
