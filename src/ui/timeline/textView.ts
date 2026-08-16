@@ -49,12 +49,16 @@ export const textView: TrackView<TextTrack> = {
     }
 
     // Separator in the row's LAST pixel — same convention as audioView: the
-    // gutter's header card bottom border sits on that exact pixel, so text
-    // rows get the line too and every card boundary meets a canvas line.
-    ctx.fillStyle = '#2a2e42';
-    const sepX = Math.max(0, Math.floor(env.scrollLeft));
-    const sepW = Math.min(env.width, Math.ceil(env.scrollLeft + env.viewportWidth)) - sepX;
-    ctx.fillRect(sepX, rowY + ROW_H - 1, Math.max(0, sepW), 1);
+    // gutter's header card bottom border sits on that exact pixel. SKIPPED
+    // for a bound text track: it renders directly above its vocal, and the
+    // pair reads as one unit — no line at the junction (the cards share one
+    // frame there too, see .pair-top/.pair-bottom).
+    if (track.boundVocalRole === null) {
+      ctx.fillStyle = '#2a2e42';
+      const sepX = Math.max(0, Math.floor(env.scrollLeft));
+      const sepW = Math.min(env.width, Math.ceil(env.scrollLeft + env.viewportWidth)) - sepX;
+      ctx.fillRect(sepX, rowY + ROW_H - 1, Math.max(0, sepW), 1);
+    }
   },
 
   hitTest(_track: TextTrack, _rowY: number, _x: number, _y: number, _env: TimelineEnv): TrackDrag | null {

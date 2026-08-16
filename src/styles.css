@@ -893,12 +893,25 @@ textarea.lyrics {
   color: #ff8a8a;
   font-size: 13px;
 }
-/* Vocal-binding badge in a text-track header. */
-.timeline-track-bind {
-  margin-left: 6px;
-  font-size: 10px;
-  color: var(--text-dim);
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 4px;
-  padding: 1px 5px;
+/* Bound text↔vocal pair: the two cards read as ONE frame — no border, no
+ * rounding and no separator at the junction (the canvas drops the line there
+ * too, see textView). On hover/active the junction border comes back in the
+ * accent color so the highlighted card is still a closed rectangle. */
+.timeline-track-head.pair-top {
+  border-bottom: none;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.timeline-track-head.pair-top:hover,
+.timeline-track-head.pair-top.active {
+  border-bottom: 1px solid var(--accent);
+}
+.timeline-track-head.pair-bottom {
+  border-top: none;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.timeline-track-head.pair-bottom:hover,
+.timeline-track-head.pair-bottom.active {
+  border-top: 1px solid var(--accent);
 }

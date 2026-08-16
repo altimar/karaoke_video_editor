@@ -54,6 +54,8 @@ function readTimelineGeometry(page: import('@playwright/test').Page) {
           testid: h.dataset.testid ?? '',
           top: r.top - origin,
           bottom: r.bottom - origin,
+          // pair-top: card whose bottom is MERGED with its vocal (no line there)
+          pair: h.classList.contains('pair-top'),
         };
       },
     );
@@ -75,16 +77,24 @@ test('header card borders coincide with canvas row separator pixels', async ({ p
   await page.waitForSelector('.timeline-canvas');
   const geo = await readTimelineGeometry(page);
 
-  // EVERY card (tracks + Фон): its bottom border must be the same pixel row
-  // as the row's canvas separator (bottom - 1) — the lines meet flush across
-  // the gutter/canvas junction.
+  // Every card EXCEPT a pair-top (merged with its vocal): its bottom border
+  // must be the same pixel row as the row's canvas separator (bottom - 1) —
+  // the lines meet flush across the gutter/canvas junction. A pair-top's
+  // bottom must have NO separator (the pair is one frame, no line inside).
   expect(geo.cards.length).toBeGreaterThanOrEqual(6);
   for (const card of geo.cards) {
     const sep = geo.seps.find((s) => Math.abs(s - (card.bottom - 1)) < 0.5);
-    expect(
-      sep,
-      `${card.testid}: card bottom ${card.bottom.toFixed(1)} must sit on a canvas separator (expected at ${(card.bottom - 1).toFixed(1)}, found [${geo.seps.map((s) => s.toFixed(1)).join(', ')}])`,
-    ).toBeDefined();
+    if (card.pair) {
+      expect(
+        sep,
+        `${card.testid}: merged pair junction must have NO separator (found one at ${sep?.toFixed(1)})`,
+      ).toBeUndefined();
+    } else {
+      expect(
+        sep,
+        `${card.testid}: card bottom ${card.bottom.toFixed(1)} must sit on a canvas separator (expected at ${(card.bottom - 1).toFixed(1)}, found [${geo.seps.map((s) => s.toFixed(1)).join(', ')}])`,
+      ).toBeDefined();
+    }
   }
 
   // The Фон card: bottom flush with the canvas content bottom — no dead space
@@ -93,9 +103,10 @@ test('header card borders coincide with canvas row separator pixels', async ({ p
   expect(bg).toBeDefined();
   expect(Math.abs(geo.cssH - bg!.bottom)).toBeLessThan(0.5);
 
-  // No stray separators: every drawn line belongs to a card boundary.
+  // No stray separators: every drawn line belongs to a non-merged card bottom.
+  const expectedSepCount = geo.cards.filter((c) => !c.pair).length;
   expect(geo.seps.length, `separators [${geo.seps.map((s) => s.toFixed(1)).join(', ')}]`).toBe(
-    geo.cards.length,
+    expectedSepCount,
   );
 
   // Cards stack CONTIGUOUSLY — no air between them (each card fills the gap

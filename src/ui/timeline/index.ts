@@ -461,10 +461,22 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
 
     for (const track of displayTracks(project)) {
       const th = document.createElement('div');
+      // A text track bound to a vocal renders as ONE frame with its vocal
+      // card (pair-top / pair-bottom): no border, no rounding and no canvas
+      // separator at the junction — the pairing is visible without a badge.
+      const pairTop =
+        track.type === 'text' && (track as TextTrack).boundVocalRole !== null;
+      const pairBottom =
+        track.type === 'audio' &&
+        project.tracks.some(
+          (t) => t.type === 'text' && t.boundVocalRole === (track as AudioTrack).role,
+        );
       th.className =
         'timeline-track-head' +
         (track.id === project.activeTrackId ? ' active' : '') +
-        (track.type === 'audio' ? ' audio' : '');
+        (track.type === 'audio' ? ' audio' : '') +
+        (pairTop ? ' pair-top' : '') +
+        (pairBottom ? ' pair-bottom' : '');
       // Card spans [previous row's separator, own row's separator] — i.e. the
       // row plus the gap ABOVE it — so cards stack contiguously with no air
       // between them and every card border lands on a canvas line. The card's
@@ -483,15 +495,6 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         name.textContent = '🎵 ' + track.name;
       } else {
         name.textContent = '🎤 ' + track.name;
-        // Vocal binding badge — makes the text↔vocal pairing visible.
-        const bind = (track as TextTrack).boundVocalRole;
-        if (bind) {
-          const badge = document.createElement('span');
-          badge.className = 'timeline-track-bind';
-          badge.textContent = '🔗 ' + AUDIO_ROLE_NAMES[bind];
-          badge.title = `Привязана к вокальной дорожке «${AUDIO_ROLE_NAMES[bind]}» (авторасстановка по ней)`;
-          name.appendChild(badge);
-        }
       }
       th.appendChild(name);
 
