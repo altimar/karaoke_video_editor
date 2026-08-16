@@ -465,7 +465,12 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         'timeline-track-head' +
         (track.id === project.activeTrackId ? ' active' : '') +
         (track.type === 'audio' ? ' audio' : '');
-      th.style.height = rowHeight(track, project.activeTrackId) + TRACK_PAD + 'px';
+      // Card height = the row height EXACTLY (not rowH + TRACK_PAD): the card's
+      // borders must coincide with the canvas row boundaries (its separator),
+      // otherwise every card outline sits TRACK_PAD below its row and rows look
+      // shifted up. The inter-row gap is a margin BELOW the card instead.
+      th.style.height = rowHeight(track, project.activeTrackId) + 'px';
+      th.style.marginBottom = TRACK_PAD + 'px';
       th.title = 'Сделать эту дорожку активной';
       // Stable selector anchors for E2E: role for audio tracks, id for text.
       th.dataset.testid = track.type === 'audio' ? `track-head-${track.role}` : 'track-head-text';
@@ -887,7 +892,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     ctx.fillStyle = '#2a2e42';
     const bgSepX = Math.max(0, Math.floor(left));
     const bgSepW = Math.min(cw, right) - bgSepX;
-    ctx.fillRect(bgSepX, bgY + BG_ROW_H, Math.max(0, bgSepW), 1);
+    ctx.fillRect(bgSepX, bgY + BG_ROW_H - 1, Math.max(0, bgSepW), 1);
 
     let drewFilmstrip = false;
     if (bg.bgType === 'video') {

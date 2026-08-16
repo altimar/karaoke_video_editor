@@ -56,11 +56,14 @@ export const audioView: TrackView<AudioTrack> = {
       ctx.fillText('загрузите аудио', env.width / 2, midY);
       ctx.textAlign = 'left';
     }
-    // Separator line under the row (only the visible slice).
+    // Separator line under the row (only the visible slice). Drawn in the LAST
+    // pixel INSIDE the row (h-1): the gutter's header card is a bordered box of
+    // exactly this row's height, and its bottom border occupies that same last
+    // pixel — so the two lines meet flush across the gutter/canvas junction.
     ctx.fillStyle = '#2a2e42';
     const sepX = Math.max(0, Math.floor(env.scrollLeft));
     const sepW = Math.min(env.width, Math.ceil(env.scrollLeft + env.viewportWidth)) - sepX;
-    ctx.fillRect(sepX, rowY + h, Math.max(0, sepW), 1);
+    ctx.fillRect(sepX, rowY + h - 1, Math.max(0, sepW), 1);
 
     // Volume automation envelope — visible in the collapsed row too (that's
     // the point of keeping it), just thinner with smaller handles.
