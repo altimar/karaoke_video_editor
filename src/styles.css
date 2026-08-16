@@ -230,6 +230,23 @@ select {
   font-style: italic;
   font-family: Georgia, serif;
 }
+/* Alignment icon buttons (text-editor style) on one line with their label. */
+.align-btns {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.align-btn {
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.align-btn svg {
+  display: block;
+}
 .font-picker {
   position: relative;
   /* Same footprint as the inputs it replaced. */

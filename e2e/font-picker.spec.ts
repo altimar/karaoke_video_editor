@@ -82,3 +82,32 @@ test('B / I toggles replace the weight select', async ({ page }) => {
   expect((await getStyle()).italic).toBe(true);
   await expect(i).toHaveClass(/active/);
 });
+
+test('alignment is a one-line icon button group', async ({ page }) => {
+  await page.goto('/');
+  const getAlign = () =>
+    page.evaluate(() => {
+      const p = window.__store.getProject();
+      return p.tracks.find((t) => t.type === 'text')!.style.textAlign;
+    });
+
+  // The old dropdown is gone; three icon buttons in one row with the label.
+  await expect(page.getByText('Выравнивание')).toBeVisible();
+  await expect(page.getByRole('option', { name: 'Слева' })).toHaveCount(0);
+  const left = page.getByTestId('btn-align-left');
+  const center = page.getByTestId('btn-align-center');
+  const right = page.getByTestId('btn-align-right');
+  await expect(left).toBeVisible();
+  await expect(center).toBeVisible();
+  await expect(right).toBeVisible();
+
+  // Default is center; clicking switches the store and the active button.
+  expect(await getAlign()).toBe('center');
+  await expect(center).toHaveClass(/active/);
+  await left.click();
+  expect(await getAlign()).toBe('left');
+  await expect(left).toHaveClass(/active/);
+  await expect(center).not.toHaveClass(/active/);
+  await right.click();
+  expect(await getAlign()).toBe('right');
+});

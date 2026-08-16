@@ -401,9 +401,42 @@ export function createStylePanel(): { root: HTMLElement } {
     addNum('Размер', 16, 200, 1, (st) => st.fontSize, (st, v) => (st.fontSize = v));
     addNum('Межстрочный', 0.8, 3, 0.05, (st) => st.lineHeight, (st, v) => (st.lineHeight = v));
 
-    const align = selectField('Выравнивание', [['left', 'Слева'], ['center', 'Центр'], ['right', 'Справа']], s.textAlign, (v) => mutateStyle((x) => (x.textAlign = v as TextStyle['textAlign'])));
-    trackFields.push({ get: (st) => st.textAlign, field: align as Field<unknown> });
-    card.appendChild(align.root);
+    // Alignment: one line, icon toggle buttons (text-editor style) instead of
+    // a dropdown. Icons are inline SVGs drawn with currentColor bars.
+    const alignRow = el('label', { className: 'field field-row' });
+    alignRow.appendChild(el('span', { className: 'field-row-label', text: 'Выравнивание' }));
+    const alignBtns = el('div', { className: 'align-btns' });
+    const alignIcons: Record<TextStyle['textAlign'], string> = {
+      left: 'M2 3.5h12M2 7h8M2 10.5h12M2 14h8',
+      center: 'M2 3.5h12M4 7h8M2 10.5h12M4 14h8',
+      right: 'M2 3.5h12M6 7h8M2 10.5h12M6 14h8',
+    };
+    const alignBtnEls: Partial<Record<TextStyle['textAlign'], HTMLButtonElement>> = {};
+    for (const mode of ['left', 'center', 'right'] as const) {
+      const ab = el('button') as HTMLButtonElement;
+      ab.type = 'button';
+      ab.className = 'font-toggle align-btn' + (s.textAlign === mode ? ' active' : '');
+      ab.title = mode === 'left' ? 'Слева' : mode === 'center' ? 'По центру' : 'Справа';
+      ab.dataset.testid = `btn-align-${mode}`;
+      ab.innerHTML =
+        `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="${alignIcons[mode]}"/></svg>`;
+      ab.addEventListener('click', () => mutateStyle((x) => (x.textAlign = mode)));
+      alignBtnEls[mode] = ab;
+      alignBtns.appendChild(ab);
+    }
+    trackFields.push({
+      get: (st) => st.textAlign,
+      field: {
+        root: alignRow,
+        set: (v) => {
+          for (const mode of ['left', 'center', 'right'] as const) {
+            alignBtnEls[mode]!.classList.toggle('active', v === mode);
+          }
+        },
+      },
+    });
+    alignRow.appendChild(alignBtns);
+    card.appendChild(alignRow);
 
     const cb = colorAlphaField('Заливка неакт.', s.colorBase, (v) => mutateStyle((x) => (x.colorBase = v)));
     const ch = colorAlphaField('Заливка актив.', s.colorHighlight, (v) => mutateStyle((x) => (x.colorHighlight = v)));
