@@ -350,14 +350,46 @@ export function createStylePanel(): { root: HTMLElement } {
 
     const ffLab = el('label', { className: 'field' });
     ffLab.appendChild(el('span', { text: 'Шрифт' }));
-    // Font PICKER, not a free-text input: lists fonts actually available in
-    // this browser, each option typeset in its own font (see fontPicker.ts).
+    // One row: font PICKER (lists fonts actually available in this browser,
+    // each option typeset in its own font — see fontPicker.ts) + B / I
+    // toggles for bold (400↔700) and italic. Replaces the old weight select.
+    const row = el('div', { className: 'font-row' });
     const ff = createFontPicker(s.fontFamily, (v) => mutateStyle((x) => (x.fontFamily = v)));
-    ffLab.appendChild(ff.root);
+    row.appendChild(ff.root);
     trackFields.push({
       get: (st) => st.fontFamily,
       field: { root: ff.root, set: (v) => ff.set(String(v)) },
     });
+
+    const boldBtn = el('button') as HTMLButtonElement;
+    boldBtn.type = 'button';
+    boldBtn.className = 'font-toggle' + (s.fontWeight >= 600 ? ' active' : '');
+    boldBtn.textContent = 'B';
+    boldBtn.title = 'Жирный';
+    boldBtn.dataset.testid = 'btn-font-bold';
+    boldBtn.addEventListener('click', () =>
+      mutateStyle((x) => (x.fontWeight = x.fontWeight >= 600 ? 400 : 700)),
+    );
+    row.appendChild(boldBtn);
+
+    const italicBtn = el('button') as HTMLButtonElement;
+    italicBtn.type = 'button';
+    italicBtn.className = 'font-toggle' + (s.italic ? ' active' : '');
+    italicBtn.textContent = 'I';
+    italicBtn.title = 'Курсив';
+    italicBtn.dataset.testid = 'btn-font-italic';
+    italicBtn.addEventListener('click', () => mutateStyle((x) => (x.italic = !x.italic)));
+    row.appendChild(italicBtn);
+
+    trackFields.push({
+      get: (st) => st.fontWeight >= 600,
+      field: { root: row, set: (v) => boldBtn.classList.toggle('active', Boolean(v)) },
+    });
+    trackFields.push({
+      get: (st) => st.italic,
+      field: { root: row, set: (v) => italicBtn.classList.toggle('active', Boolean(v)) },
+    });
+    ffLab.appendChild(row);
     card.appendChild(ffLab);
 
     const addNum = (label: string, min: number, max: number, step: number, get: (s: TextStyle) => number, set: (s: TextStyle, v: number) => void): void => {
@@ -378,13 +410,6 @@ export function createStylePanel(): { root: HTMLElement } {
     trackFields.push({ get: (st) => st.colorHighlight, field: ch as Field<unknown> });
     card.appendChild(cb.root);
     card.appendChild(ch.root);
-
-    const weights = el('div', { className: 'row2' });
-    const wf = selectField('Начертание', [['400', 'Обычный'], ['600', 'Полужирный'], ['700', 'Жирный'], ['900', 'Чёрный']], String(s.fontWeight), (v) => mutateStyle((x) => (x.fontWeight = parseInt(v, 10))));
-    trackFields.push({ get: (st) => String(st.fontWeight), field: wf as Field<unknown> });
-    weights.appendChild(wf.root);
-    card.appendChild(weights);
-
     return card;
   }
 

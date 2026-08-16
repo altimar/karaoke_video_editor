@@ -55,6 +55,7 @@ export interface TextStyle {
   fontFamily: string;
   fontSize: number; // px at the project's native resolution
   fontWeight: number;
+  italic: boolean;
   lineHeight: number; // multiplier
   textAlign: 'left' | 'center' | 'right';
   colorBase: string; // not-yet-filled syllable text color
@@ -187,9 +188,10 @@ export interface VolumePoint {
 /** Default text style used when a new track is created. */
 export function createTextStyle(): TextStyle {
   return {
-    fontFamily: 'Arial, Helvetica, sans-serif',
+    fontFamily: 'Arial',
     fontSize: 64,
     fontWeight: 700,
+    italic: false,
     lineHeight: 1.4,
     textAlign: 'center',
     colorBase: 'rgba(255,255,255,0.35)',

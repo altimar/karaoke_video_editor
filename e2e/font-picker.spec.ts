@@ -7,6 +7,13 @@ import { test, expect } from '@playwright/test';
 
 test('font picker lists available fonts and sets the track style', async ({ page }) => {
   await page.goto('/');
+  // Default font is exactly Arial (no fallback stack).
+  const initial = await page.evaluate(() => {
+    const p = window.__store.getProject();
+    return p.tracks.find((t) => t.type === 'text')!.style.fontFamily;
+  });
+  expect(initial).toBe('Arial');
+
   const btn = page.getByTestId('font-picker');
   await expect(btn).toBeVisible();
 
@@ -40,4 +47,38 @@ test('font picker lists available fonts and sets the track style', async ({ page
 
   // WYSIWYG: the preview canvas uses the same font string (applyFont).
   // (Indirect check: store value is what renderFrame reads.)
+});
+
+test('B / I toggles replace the weight select', async ({ page }) => {
+  await page.goto('/');
+  const getStyle = () =>
+    page.evaluate(() => {
+      const p = window.__store.getProject();
+      return p.tracks.find((t) => t.type === 'text')!.style;
+    });
+
+  // The old weight dropdown is gone.
+  await expect(page.getByText('Начертание')).toHaveCount(0);
+
+  const b = page.getByTestId('btn-font-bold');
+  const i = page.getByTestId('btn-font-italic');
+  await expect(b).toBeVisible();
+  await expect(i).toBeVisible();
+
+  // Defaults: bold ON (700), italic OFF.
+  await expect(b).toHaveClass(/active/);
+  await expect(i).not.toHaveClass(/active/);
+  expect((await getStyle()).fontWeight).toBe(700);
+  expect((await getStyle()).italic).toBe(false);
+
+  await b.click();
+  expect((await getStyle()).fontWeight).toBe(400);
+  await expect(b).not.toHaveClass(/active/);
+  await b.click();
+  expect((await getStyle()).fontWeight).toBe(700);
+  await expect(b).toHaveClass(/active/);
+
+  await i.click();
+  expect((await getStyle()).italic).toBe(true);
+  await expect(i).toHaveClass(/active/);
 });

@@ -80,7 +80,7 @@ export function activeIndex(timings: TimedSyllable[], timeMs: number): number {
 
 /** Configure text font/baseline/alignment on the context. */
 export function applyFont(ctx: RenderCtx, style: TextStyle): void {
-  ctx.font = `${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
+  ctx.font = `${style.italic ? 'italic ' : ''}${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left'; // we position each syllable manually for precise gaps
 }

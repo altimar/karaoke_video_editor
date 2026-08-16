@@ -8,7 +8,7 @@
  */
 import { test } from 'vitest';
 import { renderFrame } from '../src/lib/render';
-import { buildTimings, progress } from '../src/lib/text_renderers/helpers';
+import { applyFont, buildTimings, progress } from '../src/lib/text_renderers/helpers';
 
 const assert = (cond: unknown, msg: string): void => {
   if (!cond) throw new Error(msg);
@@ -87,6 +87,7 @@ const project: any = {
         fontFamily: 'Arial',
         fontSize: 64,
         fontWeight: 700,
+        italic: false,
         lineHeight: 1.4,
         textAlign: 'center',
         colorBase: 'rgba(255,255,255,0.35)',
@@ -563,4 +564,14 @@ test('video bg: bgType video WITHOUT a frame param behaves like color', () => {
   renderFrame(rec.ctx, 0, p); // caller passed nothing
   assert(count(rec.calls, 'drawImage') === 0, 'no crash, no video layer');
   assert(count(rec.calls, 'fillRect') === 1, 'color layer drawn');
+});
+
+test('applyFont: italic prefix in the canvas font string', () => {
+  const style = JSON.parse(JSON.stringify(project)).tracks[0].style;
+  const ctxA: { font?: string } = {};
+  applyFont(ctxA as CanvasRenderingContext2D, { ...style, italic: false });
+  assert(ctxA.font === '700 64px Arial', `no italic: got "${ctxA.font}"`);
+  const ctxB: { font?: string } = {};
+  applyFont(ctxB as CanvasRenderingContext2D, { ...style, italic: true });
+  assert(ctxB.font === 'italic 700 64px Arial', `italic prefix: got "${ctxB.font}"`);
 });

@@ -256,9 +256,10 @@ function argbToCss(kfnColor: string): string {
  */
 function defaultImportedStyle(): TextStyle {
   return {
-    fontFamily: 'Arial, Helvetica, sans-serif',
+    fontFamily: 'Arial',
     fontSize: 64,
     fontWeight: 700,
+    italic: false,
     lineHeight: 1.4,
     textAlign: 'center',
     colorBase: 'rgba(255,255,255,0.35)',

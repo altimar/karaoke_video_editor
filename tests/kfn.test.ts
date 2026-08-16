@@ -12,7 +12,7 @@ const assert = (cond: unknown, msg: string): void => {
 /** Build a style object with sane defaults merged over the given overrides. */
 function style(over: Record<string, unknown> = {}) {
   return {
-    fontFamily: 'Arial', fontSize: 64, fontWeight: 700, lineHeight: 1.4,
+    fontFamily: 'Arial', fontSize: 64, fontWeight: 700, italic: false, lineHeight: 1.4,
     textAlign: 'center', colorBase: 'rgba(255,255,255,0.35)', colorHighlight: '#ffe14d',
     strokeWidth: 3, strokeColorActive: '#000', strokeColorInactive: '#010101', glowBlur: 24, glowColor: '#ff0',
     layout: 'scroller', ...over,

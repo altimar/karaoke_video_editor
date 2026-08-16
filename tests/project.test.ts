@@ -20,14 +20,14 @@ const project = {
     {
       id: 't1',
       type: 'text', name: 'Lead',
-      style: { fontFamily: 'Arial', fontSize: 64, fontWeight: 700, lineHeight: 1.4, textAlign: 'center', colorBase: '#fff', colorHighlight: '#ffe14d', strokeWidth: 3, strokeColorActive: '#000', strokeColorInactive: '#010101', glowBlur: 0, glowColor: '#ff0', layout: 'scroller' },
+      style: { fontFamily: 'Arial', fontSize: 64, fontWeight: 700, italic: false, lineHeight: 1.4, textAlign: 'center', colorBase: '#fff', colorHighlight: '#ffe14d', strokeWidth: 3, strokeColorActive: '#000', strokeColorInactive: '#010101', glowBlur: 0, glowColor: '#ff0', layout: 'scroller' },
       rendererSettings: { scroller: { visibleLines: 8 } },
       lines: [{ syllables: [{ text: 'Hi', startMs: 0, sep: '' }] }],
     },
     {
       id: 't2',
       type: 'text', name: 'Backing',
-      style: { fontFamily: 'Arial', fontSize: 48, fontWeight: 700, lineHeight: 1.4, textAlign: 'center', colorBase: '#fff', colorHighlight: '#ff0000', strokeWidth: 2, strokeColorActive: '#000', strokeColorInactive: '#000', glowBlur: 0, glowColor: '#ff0', layout: 'classic' },
+      style: { fontFamily: 'Arial', fontSize: 48, fontWeight: 700, italic: false, lineHeight: 1.4, textAlign: 'center', colorBase: '#fff', colorHighlight: '#ff0000', strokeWidth: 2, strokeColorActive: '#000', strokeColorInactive: '#000', glowBlur: 0, glowColor: '#ff0', layout: 'classic' },
       rendererSettings: { classic: { lineSlots: 4, fadeMs: 1500, offsetX: 10, offsetY: 20 } },
       lines: [{ syllables: [{ text: 'Yo', startMs: 1000, sep: '' }] }],
     },

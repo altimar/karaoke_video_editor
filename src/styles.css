@@ -170,6 +170,40 @@ select {
   padding: 6px 8px;
 }
 /* ---------- Font picker (style panel) ---------- */
+/* Row: picker + B/I toggles on one line. */
+.font-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.font-row .font-picker {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.font-toggle {
+  flex: 0 0 auto;
+  width: 34px;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.font-toggle:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.font-toggle.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(255, 225, 77, 0.08);
+}
+.font-toggle[title='Курсив'] {
+  font-style: italic;
+  font-family: Georgia, serif;
+}
 .font-picker {
   position: relative;
   /* Same footprint as the inputs it replaced. */
