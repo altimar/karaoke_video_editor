@@ -18,8 +18,10 @@ export const AUDIO_ROW_COLLAPSED_H = 20;
 export const BG_ROW_H = 30;
 /** px for the time ruler band at the top of the canvas. */
 export const RULER_H = 26;
-/** px gap below the ruler before the first row. */
-export const TOP_PAD = 4;
+/** px gap below the ruler before the first row. Includes a TRACK_PAD-sized
+ * slot ABOVE the first row so the FIRST header card can be the same
+ * rowHeight + TRACK_PAD as the rest (its top sits flush at ruler + 4). */
+export const TOP_PAD = 10;
 /** px vertical gap between track rows. */
 export const TRACK_PAD = 6;
 /** horizontal hit-zone half-width around a text marker for dragging. */

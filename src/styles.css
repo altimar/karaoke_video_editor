@@ -398,7 +398,9 @@ textarea.lyrics {
 }
 /* Spacer that lines the headers up below the ruler; holds the "add track" button. */
 .timeline-gutter-ruler {
-  /* RULER_H(26) + TOP_PAD(4): keeps the first header on the first row. */
+  /* 30px: header cards start here. The first ROW begins at RULER_H(26) +
+   * TOP_PAD(10) = 36, and its card is rowHeight + TRACK_PAD tall, so the
+   * card's top sits 6px above the row — flush under this spacer. */
   height: 30px;
   flex: 0 0 auto;
   display: flex;

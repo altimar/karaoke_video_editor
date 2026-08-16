@@ -47,6 +47,14 @@ export const textView: TrackView<TextTrack> = {
       ctx.fillStyle = '#ffe14d';
       ctx.fillRect(mx, rowY, 1, ROW_H);
     }
+
+    // Separator in the row's LAST pixel — same convention as audioView: the
+    // gutter's header card bottom border sits on that exact pixel, so text
+    // rows get the line too and every card boundary meets a canvas line.
+    ctx.fillStyle = '#2a2e42';
+    const sepX = Math.max(0, Math.floor(env.scrollLeft));
+    const sepW = Math.min(env.width, Math.ceil(env.scrollLeft + env.viewportWidth)) - sepX;
+    ctx.fillRect(sepX, rowY + ROW_H - 1, Math.max(0, sepW), 1);
   },
 
   hitTest(_track: TextTrack, _rowY: number, _x: number, _y: number, _env: TimelineEnv): TrackDrag | null {

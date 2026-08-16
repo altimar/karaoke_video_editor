@@ -465,12 +465,13 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         'timeline-track-head' +
         (track.id === project.activeTrackId ? ' active' : '') +
         (track.type === 'audio' ? ' audio' : '');
-      // Card height = the row height EXACTLY (not rowH + TRACK_PAD): the card's
-      // borders must coincide with the canvas row boundaries (its separator),
-      // otherwise every card outline sits TRACK_PAD below its row and rows look
-      // shifted up. The inter-row gap is a margin BELOW the card instead.
-      th.style.height = rowHeight(track, project.activeTrackId) + 'px';
-      th.style.marginBottom = TRACK_PAD + 'px';
+      // Card spans [previous row's separator, own row's separator] — i.e. the
+      // row plus the gap ABOVE it — so cards stack contiguously with no air
+      // between them and every card border lands on a canvas line. The card's
+      // BOTTOM border coincides with the row's separator (bottom = row
+      // bottom); the label/buttons center in the WHOLE card (align-items:
+      // center, no extra padding).
+      th.style.height = rowHeight(track, project.activeTrackId) + TRACK_PAD + 'px';
       th.title = 'Сделать эту дорожку активной';
       // Stable selector anchors for E2E: role for audio tracks, id for text.
       th.dataset.testid = track.type === 'audio' ? `track-head-${track.role}` : 'track-head-text';
@@ -617,7 +618,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const bg = project.background;
     const bgHead = document.createElement('div');
     bgHead.className = 'timeline-track-head bg';
-    bgHead.style.height = BG_ROW_H + 'px';
+    bgHead.style.height = BG_ROW_H + TRACK_PAD + 'px';
     bgHead.title = 'Загрузить фон: картинку или MP4-видео';
     bgHead.dataset.testid = 'track-head-background';
     const bgName = document.createElement('span');

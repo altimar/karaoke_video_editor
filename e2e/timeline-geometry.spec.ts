@@ -75,15 +75,11 @@ test('header card borders coincide with canvas row separator pixels', async ({ p
   await page.waitForSelector('.timeline-canvas');
   const geo = await readTimelineGeometry(page);
 
-  // Every card with a canvas separator (audio rows + the Фон row): the
-  // separator's top pixel must be the card's LAST pixel (bottom - 1) — i.e.
-  // the card's bottom border and the row separator are the same pixel row,
-  // so the lines meet flush across the gutter/canvas junction.
-  const audioCards = geo.cards.filter(
-    (c) => c.testid.startsWith('track-head-') && c.testid !== 'track-head-text' && c.testid !== 'track-head-background',
-  );
-  expect(audioCards.length, 'audio role cards').toBeGreaterThanOrEqual(4);
-  for (const card of audioCards) {
+  // EVERY card (tracks + Фон): its bottom border must be the same pixel row
+  // as the row's canvas separator (bottom - 1) — the lines meet flush across
+  // the gutter/canvas junction.
+  expect(geo.cards.length).toBeGreaterThanOrEqual(6);
+  for (const card of geo.cards) {
     const sep = geo.seps.find((s) => Math.abs(s - (card.bottom - 1)) < 0.5);
     expect(
       sep,
@@ -96,21 +92,21 @@ test('header card borders coincide with canvas row separator pixels', async ({ p
   const bg = geo.cards.find((c) => c.testid === 'track-head-background');
   expect(bg).toBeDefined();
   expect(Math.abs(geo.cssH - bg!.bottom)).toBeLessThan(0.5);
-  expect(geo.seps.find((s) => Math.abs(s - (bg!.bottom - 1)) < 0.5)).toBeDefined();
 
   // No stray separators: every drawn line belongs to a card boundary.
   expect(geo.seps.length, `separators [${geo.seps.map((s) => s.toFixed(1)).join(', ')}]`).toBe(
-    audioCards.length + 1,
+    geo.cards.length,
   );
 
-  // Cards must not overlap (each next card starts at or below the previous
-  // bottom — the TRACK_PAD gap lives BETWEEN cards, not inside them).
+  // Cards stack CONTIGUOUSLY — no air between them (each card fills the gap
+  // above its row; regression: exact-row-height cards left 6px gaps).
   const sorted = [...geo.cards].sort((a, b) => a.top - b.top);
+  expect(Math.abs(sorted[0].top - 30)).toBeLessThan(0.5); // flush under the ruler spacer
   for (let i = 1; i < sorted.length; i++) {
     expect(
-      sorted[i].top,
-      `${sorted[i].testid} starts before ${sorted[i - 1].testid} ends`,
-    ).toBeGreaterThanOrEqual(sorted[i - 1].bottom - 0.5);
+      Math.abs(sorted[i].top - sorted[i - 1].bottom),
+      `${sorted[i].testid} must start exactly where ${sorted[i - 1].testid} ends`,
+    ).toBeLessThan(0.5);
   }
 });
 
