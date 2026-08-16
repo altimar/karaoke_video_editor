@@ -157,6 +157,32 @@ label.field > span {
   color: var(--text-dim);
   margin-bottom: 3px;
 }
+/* One-line numeric field: label | slider | value on a single row. */
+label.field.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+label.field.field-row > span {
+  display: inline;
+  margin-bottom: 0;
+}
+.field-row-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.field-row > input[type="range"] {
+  flex: 1 1 auto;
+  min-width: 40px;
+}
+.field-val {
+  flex: 0 0 auto;
+  min-width: 36px;
+  text-align: right;
+  font-family: "SF Mono", "Consolas", monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+}
 input[type="text"],
 input[type="number"],
 textarea,

@@ -58,23 +58,24 @@ function numberField(
   step: number,
   onChange: (v: number) => void,
 ): Field<number> {
-  const lab = el('label', { className: 'field' });
-  lab.appendChild(el('span', { text: label }));
+  // ONE LINE: label | slider | value (see .field-row) — used for Размер,
+  // Межстрочный, Обводка, Свечение and the renderer-setting sliders.
+  const lab = el('label', { className: 'field field-row' });
+  lab.appendChild(el('span', { className: 'field-row-label', text: label }));
   const input = el('input') as HTMLInputElement;
   input.type = 'range';
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
   input.value = String(value);
-  const val = el('span', { text: String(value) });
-  val.style.cssText = 'float:right;font-size:11px;color:var(--text-dim)';
+  const val = el('span', { className: 'field-val', text: String(value) });
   input.addEventListener('input', () => {
     const v = parseFloat(input.value);
     val.textContent = String(v);
     onChange(v);
   });
-  lab.appendChild(val);
   lab.appendChild(input);
+  lab.appendChild(val);
   return {
     root: lab,
     set: (v) => {
