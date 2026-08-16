@@ -196,7 +196,7 @@ input[type="color"] {
 .color-swatch {
   flex: 0 0 32px;
   height: 24px;
-  padding: 0;
+  padding: 1px 0 0;
   border: 1px solid var(--border);
   border-radius: 5px;
   cursor: pointer;
@@ -326,7 +326,7 @@ textarea.lyrics {
 .tl-zoom-btn {
   width: 26px;
   height: 26px;
-  padding: 0;
+  padding: 1px 0 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -387,16 +387,17 @@ textarea.lyrics {
   flex: 0 0 110px;
   display: flex;
   flex-direction: column;
-  /* Keep headers aligned with the canvas border/padding. */
-  padding: 1px;
+  /* Keep headers aligned with the canvas rows: the canvas has a 1px border,
+   * mirrored here by the vertical padding. */
+  padding: 1px 0 0;
 }
 /* Spacer that lines the headers up below the ruler; holds the "add track" button. */
 .timeline-gutter-ruler {
+  /* RULER_H(26) + TOP_PAD(4): keeps the first header on the first row. */
   height: 30px;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  margin-bottom: 4px;
 }
 /* "Add text track" button in the gutter, above the track headers. */
 .timeline-add-track {
@@ -772,7 +773,7 @@ textarea.lyrics {
   /* Override modal-header justify-content so the tabs span full width. */
   justify-content: flex-start;
   gap: 0;
-  padding: 0;
+  padding: 1px 0 0;
 }
 .props-tabs .export-tab {
   flex: 1;

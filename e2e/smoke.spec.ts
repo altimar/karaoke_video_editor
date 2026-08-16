@@ -25,6 +25,16 @@ test('app boots with default project', async ({ page }) => {
   await expectFullyInViewport(page, '[data-testid="track-head-minus"]');
   await expectFullyInViewport(page, '[data-testid="track-head-background"]');
 
+  // Gutter headers must sit exactly on their canvas rows: the first header's
+  // top equals the canvas top + 1px border + ruler(26) + top pad(4). A uniform
+  // offset here misaligns EVERY header (regression once: 5px drift).
+  const firstHeadTop = await page.evaluate(() => {
+    const c = document.querySelector('.timeline-canvas')!.getBoundingClientRect().top;
+    const h = document.querySelector('[data-testid="track-head-original"]')!.getBoundingClientRect().top;
+    return h - c;
+  });
+  expect(Math.abs(firstHeadTop - 31)).toBeLessThan(0.6);
+
   const state = await getAppState(page);
   expect(state.textTrackCount).toBe(1);
   expect(state.durationMs).toBe(0);
