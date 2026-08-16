@@ -120,6 +120,13 @@ export interface TextTrack extends BaseTrack {
   style: TextStyle;
   /** Per-renderer settings (visibleLines for scroller, etc.). Merged with defaults. */
   rendererSettings: RendererSettings;
+  /**
+   * The vocal audio role this track's lyrics belong to — the auto-timing (⏱)
+   * aligns against exactly this vocal, and the timeline renders the track
+   * directly above its vocal. null = unbound: ⏱ opens a vocal-picker dialog.
+   * One vocal role can carry at most ONE bound text track.
+   */
+  boundVocalRole: AudioRole | null;
 }
 
 /**
@@ -240,6 +247,10 @@ export function createTextTrack(name: string, lines?: Line[]): TextTrack {
     lines: lines ?? [{ syllables: [{ text: 'Загрузите текст', startMs: null }] }],
     style: createTextStyle(),
     rendererSettings: defaultRendererSettings(),
+    // Extra tracks are UNBOUND by default — the ⏱ auto-timing asks which
+    // vocal they belong to (the picker binds them). New projects bind their
+    // single track to 'lead' explicitly below.
+    boundVocalRole: null,
   };
 }
 
@@ -327,6 +338,7 @@ export function isRoleAudible(project: Project, role: AudioRole): boolean {
 /** Default project used on first load: one text track + the four fixed audio slots. */
 export function createDefaultProject(): Project {
   const track = createTextTrack('Дорожка 1');
+  track.boundVocalRole = 'lead'; // the single track belongs to the lead vocal
   const audio = [
     createAudioTrack('original'),
     createAudioTrack('lead'),

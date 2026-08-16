@@ -866,3 +866,28 @@ textarea.lyrics {
   }
 }
 
+
+/* Vocal-bind dialog: flat role buttons + inline conflict error. */
+.bind-role-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.bind-role-row button {
+  flex: 1 1 auto;
+}
+.bind-error {
+  margin-top: 12px;
+  color: #ff8a8a;
+  font-size: 13px;
+}
+/* Vocal-binding badge in a text-track header. */
+.timeline-track-bind {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  padding: 1px 5px;
+}

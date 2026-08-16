@@ -31,13 +31,37 @@ test('app boots with default project', async ({ page }) => {
   expect(state.fileNameByRole.minus).toBe('');
 });
 
-test('auto-align button exists on text tracks; no vocal audio → error toast', async ({ page }) => {
+test('auto-align: bound default track; empty vocal → error toast', async ({ page }) => {
   await page.goto('/');
   // The ⏱ button lives on every text-track header.
   const btn = page.locator('[data-testid="btn-auto-align"]').first();
   await expect(btn).toBeVisible();
 
-  // Without vocal audio the run refuses with a toast (no model download).
+  // The default track is bound to the (empty) lead vocal → refusal toast.
   await btn.click();
-  await expectToast(page, 'err', 'Нет вокального аудио');
+  await expectToast(page, 'err', 'пуста');
+});
+
+test('auto-align: unbound track → vocal picker; conflict → inline error', async ({ page }) => {
+  await page.goto('/');
+  // Add a SECOND text track — unbound by default.
+  await page.locator('.timeline-add-track').click();
+  // The unbound new track renders FIRST (bound pairs sit at their vocals).
+  const btn = page.locator('[data-testid="btn-auto-align"]').first();
+  await expect(btn).toBeVisible();
+
+  // ⏱ on the unbound track opens the vocal picker with flat role buttons.
+  await btn.click();
+  await expect(page.getByTestId('bind-vocal-lead')).toBeVisible();
+  await expect(page.getByTestId('bind-vocal-back')).toBeVisible();
+  await expect(page.getByTestId('bind-vocal-original')).toBeVisible();
+
+  // The default track is already bound to lead → the conflict rule fires
+  // with an inline error, the dialog stays open.
+  await page.getByTestId('bind-vocal-lead').click();
+  await expect(page.locator('.bind-error')).toContainText('уже привязана');
+
+  // Cancel closes the dialog without binding.
+  await page.getByTestId('bind-vocal-cancel').click();
+  await expect(page.getByTestId('bind-vocal-lead')).toHaveCount(0);
 });

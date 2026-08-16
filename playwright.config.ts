@@ -19,7 +19,7 @@ export default defineConfig({
     baseURL: 'http://localhost:5173',
     acceptDownloads: true,
     launchOptions: {
-      args: ['--autoplay-policy=no-user-gesture-required'],
+      args: ['--autoplay-policy=no-user-gesture-required', '--enable-unsafe-webgpu'],
     },
   },
   webServer: {

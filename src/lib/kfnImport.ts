@@ -334,6 +334,8 @@ function effectToTrack(effect: EffectFields, index: number): TextTrack {
     lines,
     style,
     rendererSettings,
+    // KFN gives no per-vocal lyrics info — leave unbound, the ⏱ picker asks.
+    boundVocalRole: null,
   };
 }
 

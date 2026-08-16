@@ -14,7 +14,7 @@ import { store } from '../../state/store';
 import { audioEngine } from '../../lib/audioEngine';
 import { timingCapture } from '../../lib/timing';
 import { flatSyllables } from '../../lib/textParser';
-import { Project, AudioTrack, createTextTrack, getAudioTrackByRole } from '../../types';
+import { Project, Track, AudioTrack, AudioRole, TextTrack, AUDIO_ROLE_NAMES, createTextTrack, getAudioTrackByRole } from '../../types';
 import {
   loadAudioIntoRole,
   loadAudioBytesIntoRole,
@@ -23,6 +23,7 @@ import {
 } from '../../lib/audioLoader';
 import { separateFull, getSeparationStatus } from '../../lib/separation';
 import { autoAlignTimings, getAlignmentStatus } from '../../lib/forcedAlign';
+import { openVocalBindDialog } from '../vocalBindDialog';
 import { loadBgVideo, clearBgVideo, getBgVideoBytes } from '../../lib/backgroundVideo';
 import { ensureBgFilmstrip, setFilmstripOnReady } from '../../lib/bgThumbnails';
 import { invalidateBgImageCache } from '../../lib/render';
@@ -168,20 +169,23 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
     const project = store.getProject();
-    const tracks = project.tracks;
+    const model = project.tracks;
+    const disp = displayTracks(project);
+    const modelIdx = new Map(disp.map((t) => [t.id, model.findIndex((m) => m.id === t.id)]));
     const env = makeEnv();
 
-    // 1. Try each row's view to claim the pointer (object hit).
-    for (let ti = 0; ti < tracks.length; ti++) {
-      const track = tracks[ti];
+    // 1. Try each row's view to claim the pointer (object hit). Rows iterate
+    // in DISPLAY order; drags carry MODEL indexes (views resolve them).
+    for (let di = 0; di < disp.length; di++) {
+      const track = disp[di];
       const view = VIEWS[track.type];
       if (!view) continue;
-      const rowY = trackTopForIndex(ti, tracks);
+      const rowY = trackTopForIndex(di, disp);
       // Text rows use a dedicated marker scan (needs the live track); other
       // kinds use the generic hitTest.
       const hit =
         track.type === 'text'
-          ? pickMarker(ti, track, rowY, x, y, env)
+          ? pickMarker(modelIdx.get(track.id) ?? -1, track, rowY, x, y, env)
           : view.hitTest(track, rowY, x, y, env);
       if (hit) {
         drag = hit;
@@ -191,19 +195,19 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     }
 
     // 2. Background click within a row (e.g. add a volume point).
-    const ti = trackIndexAtY(y, tracks);
+    const ti = trackIndexAtY(y, disp);
     if (ti >= 0) {
-      const track = tracks[ti];
+      const track = disp[ti];
       const view = VIEWS[track.type];
       if (view?.onBackgroundClick) {
-        const rowY = trackTopForIndex(ti, tracks);
+        const rowY = trackTopForIndex(ti, disp);
         view.onBackgroundClick(track, rowY, x, y, env);
         return;
       }
     }
 
     // 2.5 The background pseudo-row (below all tracks) opens the bg picker.
-    if (isBgRowAtY(y, tracks)) {
+    if (isBgRowAtY(y, disp)) {
       openBgPicker();
       return;
     }
@@ -218,16 +222,18 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
     const project = store.getProject();
-    const tracks = project.tracks;
+    const model = project.tracks;
+    const disp = displayTracks(project);
+    const modelIdx = new Map(disp.map((t) => [t.id, model.findIndex((m) => m.id === t.id)]));
     const env = makeEnv();
-    for (let ti = 0; ti < tracks.length; ti++) {
-      const track = tracks[ti];
+    for (let di = 0; di < disp.length; di++) {
+      const track = disp[di];
       const view = VIEWS[track.type];
       if (!view?.onDoubleTap) continue;
-      const rowY = trackTopForIndex(ti, tracks);
+      const rowY = trackTopForIndex(di, disp);
       const hit =
         track.type === 'text'
-          ? pickMarker(ti, track, rowY, x, y, env)
+          ? pickMarker(modelIdx.get(track.id) ?? -1, track, rowY, x, y, env)
           : view.hitTest(track, rowY, x, y, env);
       if (hit) {
         view.onDoubleTap(hit);
@@ -242,10 +248,10 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
     const project = store.getProject();
-    const tracks = project.tracks;
-    const view = VIEWS[tracks[drag.trackIndex]?.type ?? ''];
-    if (!view) return;
-    const rowY = trackTopForIndex(drag.trackIndex, tracks);
+    const track = project.tracks[drag.trackIndex];
+    const view = VIEWS[track?.type ?? ''];
+    if (!view || !track) return;
+    const rowY = displayRowTop(track.id);
     view.onDrag(drag, rowY, x, y, makeEnv());
   });
 
@@ -363,6 +369,43 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
   const ro = new ResizeObserver(() => scheduleDraw());
   ro.observe(scroll);
 
+  /**
+   * Rows in DISPLAY order: a text track bound to a vocal role renders
+   * directly ABOVE that vocal's audio track (the pair reads as one unit).
+   * Unbound text tracks keep the top area in their original order.
+   */
+  function displayTracks(project: Project): Track[] {
+    const model = project.tracks;
+    const placed = new Set<Track>();
+    const out: Track[] = [];
+    for (const t of model) {
+      if (t.type === 'text' && !t.boundVocalRole) {
+        out.push(t);
+        placed.add(t);
+      }
+    }
+    for (const t of model) {
+      if (t.type !== 'audio') continue;
+      for (const txt of model) {
+        if (txt.type === 'text' && !placed.has(txt) && txt.boundVocalRole === t.role) {
+          out.push(txt);
+          placed.add(txt);
+        }
+      }
+      out.push(t);
+      placed.add(t);
+    }
+    for (const t of model) if (!placed.has(t)) out.push(t);
+    return out;
+  }
+
+  /** Display-space row top of a track by id (drags carry MODEL indexes). */
+  function displayRowTop(trackId: string): number {
+    const disp = displayTracks(store.getProject());
+    const di = disp.findIndex((t) => t.id === trackId);
+    return di >= 0 ? trackTopForIndex(di, disp) : 0;
+  }
+
   /** Build the shared env for the current frame. */
   function makeEnv(): TimelineEnv {
     return {
@@ -386,7 +429,8 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         `${t.id}:${t.type}:${t.name}:${t.type === 'audio' ? `${t.audioFileName}:${(t as AudioTrack).muted ? 'M' : ''}:${(t as AudioTrack).solo ? 'S' : ''}` : ''}`,
       ).join('|') +
       '@' + project.activeTrackId +
-      '@bg:' + project.background.bgType + ':' + (project.background.bgVideoFileName ?? '') + ':' + (project.background.bgImageDataUrl ? '1' : '');
+      '@bg:' + project.background.bgType + ':' + (project.background.bgVideoFileName ?? '') + ':' + (project.background.bgImageDataUrl ? '1' : '') +
+      '@bind:' + project.tracks.filter((t) => t.type === 'text').map((t) => `${t.id}=${(t as TextTrack).boundVocalRole ?? ''}`).join(',');
     if (sig === lastGutterSig) return;
     lastGutterSig = sig;
     gutter.innerHTML = '';
@@ -409,7 +453,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     rulerSpacer.appendChild(addBtn);
     gutter.appendChild(rulerSpacer);
 
-    for (const track of project.tracks) {
+    for (const track of displayTracks(project)) {
       const th = document.createElement('div');
       th.className =
         'timeline-track-head' +
@@ -427,6 +471,15 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         name.textContent = '🎵 ' + track.name;
       } else {
         name.textContent = '🎤 ' + track.name;
+        // Vocal binding badge — makes the text↔vocal pairing visible.
+        const bind = (track as TextTrack).boundVocalRole;
+        if (bind) {
+          const badge = document.createElement('span');
+          badge.className = 'timeline-track-bind';
+          badge.textContent = '🔗 ' + AUDIO_ROLE_NAMES[bind];
+          badge.title = `Привязана к вокальной дорожке «${AUDIO_ROLE_NAMES[bind]}» (авторасстановка по ней)`;
+          name.appendChild(badge);
+        }
       }
       th.appendChild(name);
 
@@ -713,10 +766,25 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       toast('Авторасстановка недоступна: ' + status.reason, 'err');
       return;
     }
-    const buffer =
-      audioEngine.getBuffer('lead') ?? audioEngine.getBuffer('original') ?? audioEngine.getBuffer('back');
+
+    // The lyrics are aligned against the track's BOUND vocal. Unbound → the
+    // picker dialog binds one (and enforces one-text-track-per-vocal).
+    let role: AudioRole | null = track.boundVocalRole;
+    if (!role) {
+      const dialog = openVocalBindDialog(store.getProject(), track);
+      const chosen = await dialog.promise;
+      if (!chosen) return;
+      role = chosen;
+      store.mutate((p) => {
+        const t = p.tracks.find((x) => x.id === trackId);
+        if (t && t.type === 'text') t.boundVocalRole = role;
+      });
+      toast(`Дорожка «${track.name}» привязана к «${AUDIO_ROLE_NAMES[role]}»`, 'ok');
+    }
+
+    const buffer = audioEngine.getBuffer(role);
     if (!buffer) {
-      toast('Нет вокального аудио: загрузите оригинал или отделённый вокал', 'err');
+      toast(`Вокальная дорожка «${AUDIO_ROLE_NAMES[role]}» пуста — загрузите или извлеките вокал`, 'err');
       return;
     }
 
@@ -747,7 +815,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
   function draw(): void {
     const project = store.getProject();
     const dpr = window.devicePixelRatio || 1;
-    const tracks = project.tracks;
+    const tracks = displayTracks(project);
     // Height: ruler + one row per track + the background pseudo-row.
     let cssH = RULER_H + TOP_PAD;
     for (const t of tracks) cssH += rowHeight(t) + TRACK_PAD;
