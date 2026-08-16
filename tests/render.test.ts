@@ -457,11 +457,12 @@ test('line-last syllable has a FIXED 500ms fill (not stretching to the next line
   assert(progress(lastOfLine0, 2999) === 1, 'line-last syllable stays filled through the gap to next line');
 });
 
-test("the SONG's very last syllable fills to the song duration (unchanged)", () => {
+test("the SONG's very last syllable fills quickly, like any line-last syllable", () => {
   const lines = [{ syllables: [{ text: 'end', startMs: 1000 }] }];
   const t = buildTimings(lines as any, 5000);
-  assert(t[0].endMs === 5000, `song-last syllable ends at durationMs (got ${t[0].endMs})`);
-  assert(progress(t[0], 5000) === 1, 'song-last syllable fully filled at the end');
+  assert(t[0].endMs === 1500, `song-last syllable ends at start+500ms (got ${t[0].endMs})`);
+  assert(progress(t[0], 1500) === 1, 'song-last syllable fully filled at 500ms');
+  assert(progress(t[0], 4999) === 1, 'stays filled through the instrumental outro');
 });
 
 test('outline color follows fill state (active vs inactive stroke colors)', () => {

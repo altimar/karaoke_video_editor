@@ -20,7 +20,8 @@ const LAST_SYLLABLE_FILL_MS = 500;
  *  - A mid-line syllable ends at the next syllable's start (same line).
  *  - A line's LAST syllable ends `LAST_SYLLABLE_FILL_MS` later, NOT at the next
  *    line's start (it shouldn't slowly fill through the inter-line pause).
- *  - The song's very last syllable ends at `durationMs` (so it fully fills).
+ *  - The song's very last syllable follows the same rule — a quick fill, not a
+ *    crawl to `durationMs` (the outro is usually instrumental anyway).
  * Untimed syllables are dropped entirely — there is nothing to render until
  * timings are captured.
  */
@@ -29,7 +30,8 @@ export function buildTimings(lines: Line[], durationMs: number): TimedSyllable[]
   // !!! Untimed syllables are deliberately EXCLUDED — they do NOT render in the
   // !!! preview or the exported video, and they do NOT appear on the timeline.
   // !!! This is intentional: until a syllable has a timing, there is nothing to
-  // !!! show. Do NOT change this without explicit user approval.
+  // show. Do NOT change this without explicit user approval.
+  void durationMs;
   const flat: { syl: Syllable; lineIndex: number; sylIndex: number }[] = [];
   lines.forEach((line, lineIndex) => {
     line.syllables.forEach((syl, sylIndex) => {
@@ -41,8 +43,8 @@ export function buildTimings(lines: Line[], durationMs: number): TimedSyllable[]
     const startMs = flat[i].syl.startMs as number;
     let endMs: number;
     if (i + 1 >= flat.length) {
-      // Song's last syllable: fill to the song end.
-      endMs = Math.max(durationMs, startMs + 1);
+      // Song's last syllable: same quick fill as any line-last syllable.
+      endMs = startMs + LAST_SYLLABLE_FILL_MS;
     } else {
       const next = flat[i + 1];
       if (next.lineIndex !== flat[i].lineIndex) {
