@@ -180,7 +180,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       const track = disp[di];
       const view = VIEWS[track.type];
       if (!view) continue;
-      const rowY = trackTopForIndex(di, disp);
+      const rowY = trackTopForIndex(di, disp, project.activeTrackId);
       // Text rows use a dedicated marker scan (needs the live track); other
       // kinds use the generic hitTest.
       const hit =
@@ -195,22 +195,26 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     }
 
     // 2. Background click within a row (e.g. add a volume point).
-    const ti = trackIndexAtY(y, disp);
+    const ti = trackIndexAtY(y, disp, project.activeTrackId);
     if (ti >= 0) {
       const track = disp[ti];
       const view = VIEWS[track.type];
       if (view?.onBackgroundClick) {
-        const rowY = trackTopForIndex(ti, disp);
+        const rowY = trackTopForIndex(ti, disp, project.activeTrackId);
         view.onBackgroundClick(track, rowY, x, y, env);
         return;
       }
     }
 
     // 2.5 The background pseudo-row (below all tracks) opens the bg picker.
-    if (isBgRowAtY(y, disp)) {
+    if (isBgRowAtY(y, disp, project.activeTrackId)) {
       openBgPicker();
       return;
     }
+
+    // 2.6 A click inside a COLLAPSED audio row does nothing (no seek, no edit)
+    // — activate the track via its header first.
+    if (ti >= 0 && disp[ti].type === 'audio' && disp[ti].id !== project.activeTrackId) return;
 
     // 3. Fallback: seek.
     audioEngine.seek(xToMs(x));
@@ -230,7 +234,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       const track = disp[di];
       const view = VIEWS[track.type];
       if (!view?.onDoubleTap) continue;
-      const rowY = trackTopForIndex(di, disp);
+      const rowY = trackTopForIndex(di, disp, project.activeTrackId);
       const hit =
         track.type === 'text'
           ? pickMarker(modelIdx.get(track.id) ?? -1, track, rowY, x, y, env)
@@ -401,9 +405,10 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
 
   /** Display-space row top of a track by id (drags carry MODEL indexes). */
   function displayRowTop(trackId: string): number {
-    const disp = displayTracks(store.getProject());
+    const p = store.getProject();
+    const disp = displayTracks(p);
     const di = disp.findIndex((t) => t.id === trackId);
-    return di >= 0 ? trackTopForIndex(di, disp) : 0;
+    return di >= 0 ? trackTopForIndex(di, disp, p.activeTrackId) : 0;
   }
 
   /** Build the shared env for the current frame. */
@@ -415,6 +420,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       width: contentWidth(),
       scrollLeft: scroll.scrollLeft,
       viewportWidth: scroll.clientWidth,
+      activeTrackId: store.getProject().activeTrackId,
     };
   }
 
@@ -459,7 +465,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         'timeline-track-head' +
         (track.id === project.activeTrackId ? ' active' : '') +
         (track.type === 'audio' ? ' audio' : '');
-      th.style.height = rowHeight(track) + TRACK_PAD + 'px';
+      th.style.height = rowHeight(track, project.activeTrackId) + TRACK_PAD + 'px';
       th.title = 'Сделать эту дорожку активной';
       // Stable selector anchors for E2E: role for audio tracks, id for text.
       th.dataset.testid = track.type === 'audio' ? `track-head-${track.role}` : 'track-head-text';
@@ -818,7 +824,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const tracks = displayTracks(project);
     // Height: ruler + one row per track + the background pseudo-row.
     let cssH = RULER_H + TOP_PAD;
-    for (const t of tracks) cssH += rowHeight(t) + TRACK_PAD;
+    for (const t of tracks) cssH += rowHeight(t, project.activeTrackId) + TRACK_PAD;
     cssH += BG_ROW_H + TRACK_PAD;
     cssH += 4;
     // The canvas is viewport-wide; the spacer carries the full content width so
@@ -865,17 +871,17 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       const track = tracks[ti];
       const view = VIEWS[track.type];
       if (!view) continue;
-      const rowY = trackTopForIndex(ti, tracks);
+      const rowY = trackTopForIndex(ti, tracks, activeId);
       // Active track subtle highlight band (only the visible slice).
       if (track.id === activeId) {
         ctx.fillStyle = 'rgba(255,225,77,0.06)';
-        ctx.fillRect(Math.max(0, left), rowY - 2, Math.min(cw, right) - Math.max(0, left), rowHeight(track) + 4);
+        ctx.fillRect(Math.max(0, left), rowY - 2, Math.min(cw, right) - Math.max(0, left), rowHeight(track, activeId) + 4);
       }
       view.draw(ctx, track, rowY, env);
     }
 
     // Background pseudo-row: filmstrip for a video bg, status text otherwise.
-    const bgY = bgRowTop(tracks);
+    const bgY = bgRowTop(tracks, activeId);
     const bg = project.background;
     ctx.fillStyle = '#2a2e42';
     const bgSepX = Math.max(0, Math.floor(left));

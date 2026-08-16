@@ -29,6 +29,8 @@ export interface TimelineEnv {
   /** Width of the visible window in px. Together with scrollLeft defines the
    *  on-screen slice of content. */
   viewportWidth: number;
+  /** The active track id — audio rows collapse to one line when inactive. */
+  activeTrackId: string;
 }
 
 /** A drag a track view claimed via hitTest — carried across pointermove. */

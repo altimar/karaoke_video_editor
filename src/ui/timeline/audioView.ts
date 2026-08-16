@@ -12,14 +12,21 @@ import { audioEngine } from '../../lib/audioEngine';
 import { computePeaks } from '../../lib/waveform';
 import { insertPoint, removePoint, movePoint, clampGain } from '../../lib/volumeAutomation';
 import { AudioTrack } from '../../types';
-import { AUDIO_ROW_H } from './coords';
+import { AUDIO_ROW_H, AUDIO_ROW_COLLAPSED_H } from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
+
+/** Row height for THIS track right now: tall when active, one line otherwise. */
+function rowH(track: AudioTrack, env: TimelineEnv): number {
+  return track.id === env.activeTrackId ? AUDIO_ROW_H : AUDIO_ROW_COLLAPSED_H;
+}
 
 export const audioView: TrackView<AudioTrack> = {
   rowHeight: AUDIO_ROW_H,
 
   draw(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEnv): void {
-    const midY = rowY + AUDIO_ROW_H / 2;
+    const h = rowH(track, env);
+    const collapsed = h !== AUDIO_ROW_H;
+    const midY = rowY + h / 2;
     // Waveform peaks (mirrored) for THIS role's audio, if loaded.
     const buf = audioEngine.getBuffer(track.role);
     if (buf) {
@@ -31,11 +38,14 @@ export const audioView: TrackView<AudioTrack> = {
       const w = env.width;
       const x0 = Math.max(0, Math.floor(env.scrollLeft));
       const x1 = Math.min(w, Math.ceil(env.scrollLeft + env.viewportWidth));
+      const dim = collapsed ? 0.55 : 1; // inactive rows recede visually
       for (let x = x0; x < x1; x++) {
         const idx = Math.floor((x / w) * peaks.length);
         const p = peaks[idx] ?? 0;
-        const half = Math.max(1, p * (AUDIO_ROW_H / 2 - 1));
+        const half = Math.max(1, p * (h / 2 - 1));
+        ctx.globalAlpha = dim;
         ctx.fillRect(x, midY - half, 1, half * 2);
+        ctx.globalAlpha = 1;
       }
     } else if (!track.audioFileName) {
       // Empty slot hint.
@@ -50,13 +60,16 @@ export const audioView: TrackView<AudioTrack> = {
     ctx.fillStyle = '#2a2e42';
     const sepX = Math.max(0, Math.floor(env.scrollLeft));
     const sepW = Math.min(env.width, Math.ceil(env.scrollLeft + env.viewportWidth)) - sepX;
-    ctx.fillRect(sepX, rowY + AUDIO_ROW_H, Math.max(0, sepW), 1);
+    ctx.fillRect(sepX, rowY + h, Math.max(0, sepW), 1);
 
-    // Volume automation envelope.
-    drawEnvelope(ctx, track, rowY, env);
+    // Volume automation envelope — visible in the collapsed row too (that's
+    // the point of keeping it), just thinner with smaller handles.
+    drawEnvelope(ctx, track, rowY, env, h);
   },
 
   hitTest(track: AudioTrack, rowY: number, x: number, y: number, env: TimelineEnv): TrackDrag | null {
+    // Inactive rows are read-only — no point dragging.
+    if (track.id !== env.activeTrackId) return null;
     const ti = indexOfTrack(track);
     if (ti < 0) return null;
     const midY = rowY + AUDIO_ROW_H / 2;
@@ -71,6 +84,8 @@ export const audioView: TrackView<AudioTrack> = {
   },
 
   onBackgroundClick(_track: AudioTrack, rowY: number, x: number, y: number, env: TimelineEnv): void {
+    // Adding points happens on the active row only.
+    if (_track.id !== env.activeTrackId) return;
     const ti = indexOfTrack(_track);
     if (ti < 0) return;
     const midY = rowY + AUDIO_ROW_H / 2;
@@ -123,13 +138,15 @@ function indexOfTrack(track: { id: string }): number {
   return store.getProject().tracks.findIndex((t) => t.id === track.id);
 }
 
-/** Draw the volume-automation envelope (line + points) on top of the waveform. */
-function drawEnvelope(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEnv): void {
-  const midY = rowY + AUDIO_ROW_H / 2;
+/** Draw the volume-automation envelope (line + points) on top of the waveform.
+ *  Height-aware: collapsed rows get a thin line and small handles. */
+function drawEnvelope(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEnv, h: number): void {
+  const midY = rowY + h / 2;
   const pts = track.volumeAutomation;
-  const gainToY = (g: number): number => midY - (g - 1) * (AUDIO_ROW_H / 2);
+  const collapsed = h !== AUDIO_ROW_H;
+  const gainToY = (g: number): number => midY - (g - 1) * (h / 2);
   ctx.strokeStyle = pts.length > 0 ? '#ffe14d' : 'rgba(255,225,77,0.3)';
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = collapsed ? 1 : 1.5;
   ctx.beginPath();
   if (pts.length === 0) {
     const y = gainToY(1);
@@ -153,7 +170,7 @@ function drawEnvelope(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEn
       const x = env.msToX(p.timeMs);
       const y = gainToY(p.gain);
       ctx.beginPath();
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.arc(x, y, collapsed ? 2 : 4, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
