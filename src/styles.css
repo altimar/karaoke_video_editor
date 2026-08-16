@@ -169,6 +169,89 @@ select {
   border-radius: 6px;
   padding: 6px 8px;
 }
+/* ---------- Font picker (style panel) ---------- */
+.font-picker {
+  position: relative;
+  /* Same footprint as the inputs it replaced. */
+  display: block;
+}
+.font-picker-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  text-align: left;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.font-picker-btn:hover {
+  border-color: var(--accent);
+}
+.font-picker-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.font-picker-chevron {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.font-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: min(280px, 45vh);
+  overflow-y: auto;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.font-option {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 8px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.font-option:hover {
+  background: rgba(255, 255, 225, 0.07);
+}
+.font-option.selected {
+  background: rgba(255, 225, 77, 0.12);
+  outline: 1px solid var(--accent);
+}
+.font-sample {
+  flex: 0 0 auto;
+  font-size: 14px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.font-option-name {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 input[type="range"] {
   width: 100%;
   accent-color: var(--accent);

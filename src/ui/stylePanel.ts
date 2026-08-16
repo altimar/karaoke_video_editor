@@ -24,6 +24,7 @@
 import { store } from '../state/store';
 import { BgType, Background, Project, TextTrack, TextStyle, getActiveTrack, getActiveTextTrack } from '../types';
 import { invalidateBgImageCache } from '../lib/render';
+import { createFontPicker } from './fontPicker';
 import { getRenderer, RENDERER_LIST } from '../lib/text_renderers/registry';
 import { SCROLLER_PREVIEW_SEC_VALUES } from '../lib/text_renderers/scroller';
 import { RenderSettingSpec } from '../lib/text_renderers/types';
@@ -349,21 +350,13 @@ export function createStylePanel(): { root: HTMLElement } {
 
     const ffLab = el('label', { className: 'field' });
     ffLab.appendChild(el('span', { text: 'Шрифт' }));
-    const ff = el('input') as HTMLInputElement;
-    ff.value = s.fontFamily;
-    let focused = false;
-    ff.addEventListener('focus', () => (focused = true));
-    ff.addEventListener('blur', () => (focused = false));
-    ff.addEventListener('input', () => mutateStyle((x) => (x.fontFamily = ff.value)));
-    ffLab.appendChild(ff);
+    // Font PICKER, not a free-text input: lists fonts actually available in
+    // this browser, each option typeset in its own font (see fontPicker.ts).
+    const ff = createFontPicker(s.fontFamily, (v) => mutateStyle((x) => (x.fontFamily = v)));
+    ffLab.appendChild(ff.root);
     trackFields.push({
       get: (st) => st.fontFamily,
-      field: {
-        root: ffLab,
-        set: (v) => {
-          if (!focused && ff.value !== v) ff.value = String(v);
-        },
-      },
+      field: { root: ff.root, set: (v) => ff.set(String(v)) },
     });
     card.appendChild(ffLab);
 
