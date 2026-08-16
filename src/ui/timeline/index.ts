@@ -612,7 +612,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const bg = project.background;
     const bgHead = document.createElement('div');
     bgHead.className = 'timeline-track-head bg';
-    bgHead.style.height = BG_ROW_H + TRACK_PAD + 'px';
+    bgHead.style.height = BG_ROW_H + 'px';
     bgHead.title = 'Загрузить фон: картинку или MP4-видео';
     bgHead.dataset.testid = 'track-head-background';
     const bgName = document.createElement('span');
@@ -822,11 +822,12 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
     const project = store.getProject();
     const dpr = window.devicePixelRatio || 1;
     const tracks = displayTracks(project);
-    // Height: ruler + one row per track + the background pseudo-row.
+    // Height: ruler + one row per track + the background pseudo-row. Ends
+    // EXACTLY at the bg row bottom — no trailing pad: the canvas must not
+    // extend past the last row (visible dead space under «Фон»).
     let cssH = RULER_H + TOP_PAD;
     for (const t of tracks) cssH += rowHeight(t, project.activeTrackId) + TRACK_PAD;
-    cssH += BG_ROW_H + TRACK_PAD;
-    cssH += 4;
+    cssH += BG_ROW_H;
     // The canvas is viewport-wide; the spacer carries the full content width so
     // the scroll container can pan. canvas backing store scales only with the
     // viewport (× dpr), never with zoom — so it can't exceed the device limit.

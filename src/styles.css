@@ -291,7 +291,7 @@ textarea.lyrics {
 .timeline {
   background: var(--bg-panel);
   border-top: 1px solid var(--border);
-  padding: 8px 12px 10px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -369,6 +369,11 @@ textarea.lyrics {
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: 6px;
+  /* The 1px border lives OUTSIDE the drawing surface: inline style.height is
+   * the exact CSS-px height the row math draws into. With border-box the
+   * content box is 2px shorter than the backing store, so the whole drawing
+   * was subtly scaled and lower rows drifted up to ~2px vs the gutter. */
+  box-sizing: content-box;
   /* Pin to the left edge of the scroll viewport so the (narrow) canvas stays
      fully on-screen as the (wide) spacer scrolls. The draw() offsets content
      via ctx.translate(-scrollLeft). */
@@ -792,12 +797,15 @@ textarea.lyrics {
 }
 
 /* ---------- Responsive (mobile) layout ---------- */
-/* On narrow screens: preview pinned to the top (fixed height), timeline fills
-   the rest; lyrics/style live in the props-sheet (reached via the FAB). */
+/* On narrow screens: preview pinned to the top (min height), timeline hugs its
+   content; lyrics/style live in the props-sheet (reached via the FAB). The
+   timeline row is AUTO (like desktop): with 1fr the panel stretched to the
+   window bottom and showed dead space under the «Фон» row; the preview (1fr)
+   absorbs the leftover height instead. */
 @media (max-width: 900px) {
   #app {
     /* topbar | preview | timeline */
-    grid-template-rows: auto 42vh 1fr;
+    grid-template-rows: auto minmax(42vh, 1fr) auto;
   }
   .main {
     grid-template-columns: 1fr;
