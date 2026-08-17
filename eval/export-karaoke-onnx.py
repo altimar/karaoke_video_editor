@@ -127,6 +127,19 @@ def main() -> None:
     model = load_model()
     wrapper = HostSTFTMaskHead(model).eval()
     if half:
+        # RMSNorm is F.normalize(x, dim=-1): the sum of squares over ~8k
+        # feature dims OVERFLOWS fp16 range (65504) on vocal-heavy inputs →
+        # Inf → x/Inf = exact zeros → a silent all-zero mask. Keep the norm
+        # reduction in fp32 (cast in/out); everything else stays fp16.
+        import torch.nn.functional as F
+        from models.bs_roformer.mel_band_roformer import RMSNorm as MBRMSNorm
+
+        def _rms_norm_fp32(self, x: torch.Tensor) -> torch.Tensor:
+            dtype = x.dtype
+            x = F.normalize(x.float(), dim=-1) * self.scale
+            return x.to(dtype) * self.gamma
+
+        MBRMSNorm.forward = _rms_norm_fp32  # type: ignore[method-assign]
         wrapper = wrapper.half()
 
     # Smoke-test the wrapper (shape + finite range). The numeric fidelity

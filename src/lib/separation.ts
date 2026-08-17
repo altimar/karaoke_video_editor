@@ -97,7 +97,10 @@ const KARAOKE_MODEL: ModelConfig = {
 const KARAOKE_MODEL_FP16: ModelConfig = {
   graphUrl:
     'https://huggingface.co/Project42/mel-band-roformer-karaoke-webgpu/resolve/main/model_fp16.onnx',
-  cacheName: 'karaoke-model-fp16-v1',
+  // v2: v1 had fp16 RMSNorm (F.normalize) whose sum-of-squares overflowed on
+  // vocal-heavy inputs → exact-zero masks → garbage phase-2 stems. v2 keeps
+  // the norm reductions in fp32.
+  cacheName: 'karaoke-model-fp16-v2',
   inputLayout: 'frames-major',
   maskLayout: 'stem',
 };
