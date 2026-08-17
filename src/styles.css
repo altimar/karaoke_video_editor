@@ -247,6 +247,37 @@ select {
 .align-btn svg {
   display: block;
 }
+/* Separation scheme picker (pre-start dialog): column of flat option cards. */
+.scheme-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 10px 0;
+}
+.scheme-opt {
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.scheme-opt:hover {
+  border-color: var(--accent);
+}
+.scheme-opt.selected {
+  border-color: var(--accent);
+  background: rgba(255, 225, 77, 0.08);
+}
+.scheme-opt-label {
+  font-size: 13px;
+  color: var(--text);
+}
+.scheme-opt-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 3px;
+}
 .font-picker {
   position: relative;
   /* Same footprint as the inputs it replaced. */
