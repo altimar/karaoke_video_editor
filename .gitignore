@@ -19,3 +19,8 @@ eval/_*.mjs
 eval/_*.ts
 eval/results/
 public/local-models
+
+# Separation eval: vendored model code + python env (see eval/export-karaoke-onnx.py)
+eval/msst/
+eval/.venv/
+eval/__pycache__/
