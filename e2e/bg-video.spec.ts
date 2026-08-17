@@ -22,7 +22,7 @@ test.beforeEach(async ({ page }) => {
     .poll(async () => (await getAppState(page)).bufferDurationByRole.minus, { timeout: 30_000 })
     .toBeGreaterThan(0);
   await page.locator('[data-testid="track-head-background"]').click();
-  await page.locator('[data-testid="input-bg-load"]').setInputFiles({
+  await page.locator('[data-testid="input-bg-load-panel"]').setInputFiles({
     name: 'bg-sample.mp4',
     mimeType: 'video/mp4',
     buffer: Buffer.from(fixtureBytes),

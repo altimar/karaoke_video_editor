@@ -24,11 +24,12 @@ import {
 import { separateFull, getSeparationStatus } from '../../lib/separation';
 import { autoAlignTimings, getAlignmentStatus } from '../../lib/forcedAlign';
 import { openVocalBindDialog } from '../vocalBindDialog';
-import { loadBgVideo, clearBgVideo, getBgVideoBytes } from '../../lib/backgroundVideo';
+import { clearBgVideo, getBgVideoBytes } from '../../lib/backgroundVideo';
 import { ensureBgFilmstrip, setFilmstripOnReady } from '../../lib/bgThumbnails';
 import { invalidateBgImageCache } from '../../lib/render';
 import { openSeparationDialog } from '../separationDialog';
 import type { ToastFn } from '../controls';
+import { applyBgFile } from '../bgFile';
 import {
   RULER_H, TOP_PAD, TRACK_PAD, BG_ROW_H, rowHeight, trackTopForIndex, trackIndexAtY, bgRowTop, isBgRowAtY,
 } from './coords';
@@ -42,7 +43,16 @@ const VIEWS: Record<string, TrackView> = {
   audio: audioView as TrackView,
 };
 
-export function createTimeline(toast: ToastFn): { root: HTMLElement } {
+/** Hooks for the app shell: the Фон pseudo-row behaves like a selectable
+ * "track" whose settings are the shared background card in the style panel. */
+export interface TimelineOptions {
+  /** The Фон header was clicked — show the background settings panel. */
+  onBackgroundSelected?: () => void;
+  /** Any real track header was clicked — bring the track panel back. */
+  onTrackSelected?: () => void;
+}
+
+export function createTimeline(toast: ToastFn, opts: TimelineOptions = {}): { root: HTMLElement } {
   const root = document.createElement('div');
   root.className = 'timeline';
 
@@ -558,6 +568,10 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
         if ((e.target as HTMLElement).closest('.timeline-track-align')) return;
         if ((e.target as HTMLElement).closest('.timeline-track-ms')) return;
         store.mutate((p) => (p.activeTrackId = track.id));
+        // Even when the active track doesn't change (same id), the panel must
+        // leave background mode — the user explicitly picked a track.
+        gutter.querySelector('.timeline-track-head.bg')?.classList.remove('active');
+        opts.onTrackSelected?.();
         if (track.type === 'audio' && !track.audioFileName) {
           openAudioPicker(track);
         }
@@ -645,9 +659,13 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
       });
       bgHead.appendChild(bgDel);
     }
+    // Header click SELECTS the Фон pseudo-row: its "track settings" are the
+    // shared background card in the style panel. Quick-load stays on the
+    // canvas row (click there opens the file picker directly).
     bgHead.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('.timeline-track-del')) return;
-      openBgPicker();
+      bgHead.classList.add('active');
+      opts.onBackgroundSelected?.();
     });
     gutter.appendChild(bgHead);
   }
@@ -678,6 +696,8 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
   }
 
   // --- Background pseudo-row: hidden file input (image or mp4 video) ---
+  // Quick-load path (canvas-row click). The settings card in the style panel
+  // has its own input — both share applyBgFile.
   const bgInput = document.createElement('input');
   bgInput.type = 'file';
   bgInput.accept = 'image/*,video/mp4,.mp4';
@@ -686,32 +706,7 @@ export function createTimeline(toast: ToastFn): { root: HTMLElement } {
   bgInput.addEventListener('change', async () => {
     const f = bgInput.files?.[0];
     if (!f) return;
-    const isVideo = f.type.startsWith('video/') || /\.mp4$/i.test(f.name);
-    if (isVideo) {
-      const bytes = new Uint8Array(await f.arrayBuffer());
-      loadBgVideo(bytes);
-      store.mutate((p) => {
-        p.background.bgType = 'video';
-        p.background.bgVideoFileName = f.name;
-      });
-    } else {
-      // Image — reuse the data-URL path the style panel uses.
-      const dataUrl = await new Promise<string>((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(String(r.result));
-        r.onerror = () => rej(r.error);
-        r.readAsDataURL(f);
-      }).catch(() => null);
-      if (!dataUrl) {
-        toast('Не удалось прочитать файл фона', 'err');
-        return;
-      }
-      store.mutate((p) => {
-        p.background.bgType = 'image';
-        p.background.bgImageDataUrl = dataUrl;
-      });
-      invalidateBgImageCache();
-    }
+    await applyBgFile(f, toast);
     bgInput.value = '';
   });
   scroll.parentElement?.appendChild(bgInput);

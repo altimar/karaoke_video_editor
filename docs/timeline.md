@@ -26,7 +26,7 @@
 
 Под всеми дорожками — строка «Фон» (`BG_ROW_H`), привязанная к `project.background`, а НЕ к `Track` (типы дорожек не расширяются). В gutter — шапка «🖼 Фон» (`data-testid="track-head-background"`), на canvas — **фильмстрип** для видео-фона или статус/подсказка («фон: цвет», «фон: картинка»), без маркеров и без waveform.
 
-- Клик по строке (шапке или canvas-полосе) → file picker (`image/*,video/mp4`): картинка → `bgType='image'` + data URL; mp4 → `bgType='video'` + байты в `lib/backgroundVideo.ts` + `bgVideoFileName`.
+- Клик по **шапке** → «выбор» псевдостроки: шапка подсвечивается, панель стиля показывает карточку «Фон» (настройки фона живут там; на мобильных сразу открывается props-sheet). Клик по шапке любой дорожки снимает выбор. Клик по **canvas-полосе** → быстрый file picker (`image/*,video/mp4`): картинка → `bgType='image'` + data URL; mp4 → `bgType='video'` + байты в `lib/backgroundVideo.ts` + `bgVideoFileName`. Логика загрузки общая — `ui/bgFile.ts: applyBgFile` (её использует и кнопка в карточке «Фон»).
 - Кнопка «×» в шапке (когда загружена картинка/видео) → сброс на цвет.
 - Цвет/градиент настраиваются в панели стиля (карточка «Фон (общий)»), там же индикатор видео-фона и «Вписывание».
 - Геометрия: `bgRowTop(tracks) = trackTopForIndex(tracks.length, tracks)`, попадание — `isBgRowAtY`.

@@ -23,8 +23,9 @@
  */
 import { store } from '../state/store';
 import { BgType, Background, Project, TextTrack, TextStyle, getActiveTrack, getActiveTextTrack } from '../types';
-import { invalidateBgImageCache } from '../lib/render';
 import { createFontPicker } from './fontPicker';
+import { applyBgFile } from './bgFile';
+import type { ToastFn } from './controls';
 import { getRenderer, RENDERER_LIST } from '../lib/text_renderers/registry';
 import { SCROLLER_PREVIEW_SEC_VALUES } from '../lib/text_renderers/scroller';
 import { RenderSettingSpec } from '../lib/text_renderers/types';
@@ -239,7 +240,7 @@ function selectField(
   };
 }
 
-export function createStylePanel(): { root: HTMLElement } {
+export function createStylePanel(toast: ToastFn = () => {}): { root: HTMLElement; showBackground: () => void; showTrack: () => void } {
   const root = el('div');
 
   // Card containers. Per-track cards live in a host that we repopulate on track
@@ -537,10 +538,38 @@ export function createStylePanel(): { root: HTMLElement } {
 
   function buildBg(bg: Background): void {
     bgCardEl.innerHTML = '';
-    bgCardEl.appendChild(el('h2', { text: 'Фон (общий)' }));
+    bgCardEl.appendChild(el('h2', { text: 'Фон' }));
     const typeSel = selectField('Тип фона', [['color', 'Цвет'], ['gradient', 'Градиент'], ['image', 'Картинка'], ['video', 'Видео (MP4)']], bg.bgType, (v) => mutateBg((x) => (x.bgType = v as BgType)));
     projFields.push({ get: (p) => p.background.bgType, field: typeSel as Field<unknown> });
     bgCardEl.appendChild(typeSel.root);
+
+    // Load button (image or MP4) — loading auto-switches the type. The
+    // timeline's Фон canvas row keeps its own quick-load picker.
+    const loadLab = el('label', { className: 'field' });
+    loadLab.appendChild(el('span', { text: 'Файл' }));
+    const loadRow = el('div', { className: 'font-row' });
+    const loadBtn = el('button') as HTMLButtonElement;
+    loadBtn.type = 'button';
+    loadBtn.className = 'font-toggle';
+    loadBtn.style.cssText = 'width:auto;padding:0 10px';
+    loadBtn.textContent = 'Загрузить картинку или MP4…';
+    loadBtn.dataset.testid = 'btn-bg-load';
+    const loadInput = el('input') as HTMLInputElement;
+    loadInput.type = 'file';
+    loadInput.accept = 'image/*,video/mp4,.mp4';
+    loadInput.style.display = 'none';
+    loadInput.dataset.testid = 'input-bg-load-panel';
+    loadBtn.addEventListener('click', () => loadInput.click());
+    loadInput.addEventListener('change', async () => {
+      const f = loadInput.files?.[0];
+      if (!f) return;
+      await applyBgFile(f, toast);
+      loadInput.value = '';
+    });
+    loadRow.appendChild(loadBtn);
+    loadRow.appendChild(loadInput);
+    loadLab.appendChild(loadRow);
+    bgCardEl.appendChild(loadLab);
 
     // Fit mode applies to image AND video backgrounds.
     if (bg.bgType === 'image' || bg.bgType === 'video') {
@@ -570,33 +599,16 @@ export function createStylePanel(): { root: HTMLElement } {
       bgCardEl.appendChild(top.root);
       bgCardEl.appendChild(bot.root);
     } else if (bg.bgType === 'video') {
-      // The video file itself is loaded from the timeline's «Фон» row.
       bgCardEl.appendChild(
         el('div', {
           className: 'hint',
           text: bg.bgVideoFileName
-            ? `Видео «${bg.bgVideoFileName}» загружено. Смена файла — на таймлайне (строка «Фон»). Цвет фона показывается до начала и после конца видео.`
-            : 'Загрузите MP4 на таймлайне (строка «Фон»). Цвет фона показывается до начала и после конца видео.',
+            ? `Видео «${bg.bgVideoFileName}» загружено. Цвет фона показывается до начала и после конца видео.`
+            : 'Загрузите MP4 кнопкой выше. Цвет фона показывается до начала и после конца видео.',
         }),
       );
-    } else {
-      const lab = el('label', { className: 'field' });
-      lab.appendChild(el('span', { text: 'Файл картинки' }));
-      const file = el('input') as HTMLInputElement;
-      file.type = 'file';
-      file.accept = 'image/*';
-      file.addEventListener('change', async () => {
-        const f = file.files?.[0];
-        if (!f) return;
-        const dataUrl = await fileToDataUrl(f);
-        mutateBg((x) => (x.bgImageDataUrl = dataUrl));
-        invalidateBgImageCache();
-      });
-      lab.appendChild(file);
-      bgCardEl.appendChild(lab);
-      if (bg.bgImageDataUrl) {
-        bgCardEl.appendChild(el('div', { className: 'hint', text: 'Картинка загружена. Смените тип фона, чтобы применить.' }));
-      }
+    } else if (bg.bgType === 'image' && bg.bgImageDataUrl) {
+      bgCardEl.appendChild(el('div', { className: 'hint', text: 'Картинка загружена.' }));
     }
   }
 
@@ -613,7 +625,11 @@ export function createStylePanel(): { root: HTMLElement } {
     const isText = track.type === 'text';
     // Layout trigger applies to text tracks only (audio tracks have no layout).
     const layoutKey = isText ? track.style.layout : '';
-    const needRebuild = project.activeTrackId !== lastActiveTrackId || layoutKey !== lastLayout;
+    const activeChanged = project.activeTrackId !== lastActiveTrackId;
+    const needRebuild = activeChanged || layoutKey !== lastLayout;
+    // The active track changed while the Фon settings were open (delete, add,
+    // import…) — bring the track panel back.
+    if (showingBg && activeChanged) showTrack();
 
     // Per-track cards: rebuild ONLY when the active track or the layout mode
     // changes, so dragging a slider within a track doesn't tear down the panel.
@@ -635,22 +651,34 @@ export function createStylePanel(): { root: HTMLElement } {
     for (const { get, field } of projFields) field.set(get(project));
   }
 
-  // Initial build.
+  // Initial build: the background card is hidden until the Фон pseudo-row is
+  // selected — by default the panel shows the active track's cards.
   root.appendChild(trackHost);
   root.appendChild(bgCardEl);
+  bgCardEl.style.display = 'none';
   rebuildTrackCards();
   rebuildProjectCards();
 
   store.subscribe(syncFromStore);
 
-  return { root };
-}
+  // --- Background-selected mode -------------------------------------------------
+  // The Фон pseudo-row behaves like a selectable "track": when selected, the
+  // panel shows ONLY the background card (track cards hidden). Selecting any
+  // real track — via its header click (explicit callback) or an external
+  // activeTrackId change (syncFromStore below) — switches back.
+  let showingBg = false;
+  function showBackground(): void {
+    if (showingBg) return;
+    showingBg = true;
+    trackHost.style.display = 'none';
+    bgCardEl.style.display = '';
+  }
+  function showTrack(): void {
+    if (!showingBg) return;
+    showingBg = false;
+    trackHost.style.display = '';
+    bgCardEl.style.display = 'none';
+  }
 
-function fileToDataUrl(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result as string);
-    r.onerror = reject;
-    r.readAsDataURL(f);
-  });
+  return { root, showBackground, showTrack };
 }

@@ -39,7 +39,7 @@ function main(): void {
   // desktop columns and the mobile props-sheet as the viewport changes (a DOM
   // move preserves listeners/state, so the same instances work in both layouts).
   const lyrics = createLyricsEditor();
-  const style = createStylePanel();
+  const style = createStylePanel(toast);
   const preview = createPreview();
 
   // Main 3-column area
@@ -67,9 +67,6 @@ function main(): void {
 
   app.appendChild(main);
 
-  // Timeline at the bottom
-  app.appendChild(createTimeline(toast).root);
-
   // --- Mobile props-sheet + FAB ---
   // The lyrics & style nodes are stashed in a modal sheet reached via a floating
   // button; on desktop they live in their columns instead. applyLayout() is the
@@ -77,6 +74,19 @@ function main(): void {
   // desktop columns or the sheet's panels, so there's no ordering ambiguity.
   const propsSheet = createPropsSheet();
   document.body.appendChild(propsSheet.root);
+
+  // Timeline at the bottom. The Фон pseudo-row is selectable like a track:
+  // its "settings" are the background card in the style panel (on mobile the
+  // sheet opens right away so the selection is visible).
+  app.appendChild(
+    createTimeline(toast, {
+      onBackgroundSelected: () => {
+        style.showBackground();
+        if (window.matchMedia('(max-width: 900px)').matches) propsSheet.open();
+      },
+      onTrackSelected: () => style.showTrack(),
+    }).root,
+  );
 
   const fab = document.createElement('button');
   fab.className = 'props-fab';

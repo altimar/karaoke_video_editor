@@ -75,3 +75,25 @@ test('auto-align: unbound track → vocal picker; conflict → inline error', as
   await page.getByTestId('bind-vocal-cancel').click();
   await expect(page.getByTestId('bind-vocal-lead')).toHaveCount(0);
 });
+
+test('background settings live behind the Фон pseudo-row', async ({ page }) => {
+  await page.goto('/');
+  // By default the style panel shows the active track's cards; the bg card
+  // (now the Фon "track settings") is hidden.
+  await expect(page.getByText('Тип фона')).toBeHidden();
+  await expect(page.getByText('Шрифт')).toBeVisible();
+
+  // Clicking the Фон header selects it: bg card appears, track cards hide.
+  await page.locator('[data-testid="track-head-background"]').click();
+  await expect(page.getByText('Тип фона')).toBeVisible();
+  await expect(page.getByText('Шрифт')).toBeHidden();
+  await expect(page.getByTestId('btn-bg-load')).toBeVisible();
+  await expect(page.locator('[data-testid="track-head-background"]')).toHaveClass(/active/);
+
+  // Clicking a track header (even the already-active one) brings the track
+  // panel back and clears the Фон selection highlight.
+  await page.locator('[data-testid="track-head-text"]').click();
+  await expect(page.getByText('Шрифт')).toBeVisible();
+  await expect(page.getByText('Тип фона')).toBeHidden();
+  await expect(page.locator('[data-testid="track-head-background"]')).not.toHaveClass(/active/);
+});
