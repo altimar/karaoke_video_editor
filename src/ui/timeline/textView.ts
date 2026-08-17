@@ -8,7 +8,7 @@
  */
 import { store } from '../../state/store';
 import { flatSyllables } from '../../lib/textParser';
-import { Line, TextTrack } from '../../types';
+import { TextTrack } from '../../types';
 import { ROW_H, TEXT_ROW_H_ACTIVE, HIT_W } from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
 
@@ -48,15 +48,6 @@ export const textView: TrackView<TextTrack> = {
       ctx.textBaseline = 'middle';
       const label = syl.text.trim();
       if (label) ctx.fillText(label.slice(0, 10), mx + 5, laneY + ROW_H / 2);
-
-      // fill bar to the right up to next syllable start (shows duration visually)
-      const next = nextStartMs(track.lines, lineIndex, sylIndex);
-      const endX = next !== null ? env.msToX(next) : env.msToX(env.durationMs());
-      const grad = ctx.createLinearGradient(mx, 0, endX, 0);
-      grad.addColorStop(0, 'rgba(255,225,77,0.55)');
-      grad.addColorStop(1, 'rgba(255,225,77,0.10)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(mx, laneY + ROW_H / 2 - 2, Math.max(2, endX - mx), 4);
 
       // marker handle — thin 1px line spanning its lane
       ctx.fillStyle = '#ffe14d';
@@ -156,15 +147,6 @@ export function pickMarker(
     if (x >= mx - HIT_W && x <= mx + HIT_W) {
       return { kind: 'syllable', trackIndex, lineIndex, sylIndex, moved: false };
     }
-  }
-  return null;
-}
-
-function nextStartMs(lines: Line[], lineIndex: number, sylIndex: number): number | null {
-  const flat = flatSyllables(lines);
-  const i = flat.findIndex((f) => f.lineIndex === lineIndex && f.sylIndex === sylIndex);
-  for (let j = i + 1; j < flat.length; j++) {
-    if (flat[j].syl.startMs !== null) return flat[j].syl.startMs;
   }
   return null;
 }
