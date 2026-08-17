@@ -9,21 +9,36 @@
 import { store } from '../../state/store';
 import { flatSyllables } from '../../lib/textParser';
 import { Line, TextTrack } from '../../types';
-import { ROW_H, HIT_W } from './coords';
+import { ROW_H, TEXT_ROW_H_ACTIVE, HIT_W } from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
+
+/**
+ * Lane of the n-th TIMED syllable: 1st → lane 0, 2nd → lane 1, 3rd → lane 2,
+ * 4th → lane 0, … (round-robin across the three lanes of the active text row).
+ * Inactive rows have a single lane (always 0).
+ */
+function laneOf(timedIndex: number, threeLanes: boolean): number {
+  return threeLanes ? timedIndex % 3 : 0;
+}
 
 export const textView: TrackView<TextTrack> = {
   rowHeight: ROW_H,
 
   draw(ctx: Ctx, track: TextTrack, rowY: number, env: TimelineEnv): void {
+    const threeLanes = env.activeTrackId === track.id;
+    const h = threeLanes ? TEXT_ROW_H_ACTIVE : ROW_H;
     const flat = flatSyllables(track.lines);
     // Visible content window (with a little slack); skip syllables entirely
     // off-screen so we don't build gradients/labels for them every frame.
     const left = env.scrollLeft - 40;
     const right = env.scrollLeft + env.viewportWidth + 40;
+    let timedIndex = 0;
     for (let i = 0; i < flat.length; i++) {
       const { lineIndex, sylIndex, syl } = flat[i];
       if (syl.startMs === null) continue;
+      const lane = laneOf(timedIndex, threeLanes);
+      timedIndex++;
+      const laneY = rowY + lane * ROW_H;
       const mx = env.msToX(syl.startMs);
       if (mx < left || mx > right) continue;
 
@@ -32,7 +47,7 @@ export const textView: TrackView<TextTrack> = {
       ctx.font = '11px system-ui';
       ctx.textBaseline = 'middle';
       const label = syl.text.trim();
-      if (label) ctx.fillText(label.slice(0, 10), mx + 5, rowY + ROW_H / 2);
+      if (label) ctx.fillText(label.slice(0, 10), mx + 5, laneY + ROW_H / 2);
 
       // fill bar to the right up to next syllable start (shows duration visually)
       const next = nextStartMs(track.lines, lineIndex, sylIndex);
@@ -41,11 +56,11 @@ export const textView: TrackView<TextTrack> = {
       grad.addColorStop(0, 'rgba(255,225,77,0.55)');
       grad.addColorStop(1, 'rgba(255,225,77,0.10)');
       ctx.fillStyle = grad;
-      ctx.fillRect(mx, rowY + ROW_H / 2 - 2, Math.max(2, endX - mx), 4);
+      ctx.fillRect(mx, laneY + ROW_H / 2 - 2, Math.max(2, endX - mx), 4);
 
-      // marker handle — thin 1px line
+      // marker handle — thin 1px line spanning its lane
       ctx.fillStyle = '#ffe14d';
-      ctx.fillRect(mx, rowY, 1, ROW_H);
+      ctx.fillRect(mx, laneY, 1, ROW_H);
     }
 
     // Separator in the row's LAST pixel — same convention as audioView: the
@@ -57,7 +72,7 @@ export const textView: TrackView<TextTrack> = {
       ctx.fillStyle = '#2a2e42';
       const sepX = Math.max(0, Math.floor(env.scrollLeft));
       const sepW = Math.min(env.width, Math.ceil(env.scrollLeft + env.viewportWidth)) - sepX;
-      ctx.fillRect(sepX, rowY + ROW_H - 1, Math.max(0, sepW), 1);
+      ctx.fillRect(sepX, rowY + h - 1, Math.max(0, sepW), 1);
     }
   },
 
@@ -123,11 +138,20 @@ export function pickMarker(
   y: number,
   env: TimelineEnv,
 ): TrackDrag | null {
-  if (y < rowY || y > rowY + ROW_H) return null;
+  const threeLanes = env.activeTrackId === track.id;
+  const h = threeLanes ? TEXT_ROW_H_ACTIVE : ROW_H;
+  if (y < rowY || y > rowY + h) return null;
   const flat = flatSyllables(track.lines);
+  let timedIndex = 0;
   for (let i = 0; i < flat.length; i++) {
     const { lineIndex, sylIndex, syl } = flat[i];
     if (syl.startMs === null) continue;
+    const lane = laneOf(timedIndex, threeLanes);
+    timedIndex++;
+    // A marker is grabbable only within ITS lane: with three lanes several
+    // markers share the same x, the click must pick the one under the cursor.
+    const laneY = rowY + lane * ROW_H;
+    if (y < laneY || y > laneY + ROW_H) continue;
     const mx = env.msToX(syl.startMs);
     if (x >= mx - HIT_W && x <= mx + HIT_W) {
       return { kind: 'syllable', trackIndex, lineIndex, sylIndex, moved: false };
