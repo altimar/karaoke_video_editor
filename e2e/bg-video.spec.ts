@@ -96,6 +96,8 @@ test('KFN export embeds the video as a type=5 file with an ID=62 effect', async 
 });
 
 test('MP4 export with a video background renders (decode pipeline smoke)', async ({ page }) => {
+  // CI runners have no real H.264 encoder — see export-mp4.spec.ts.
+  test.skip(!!process.env.CI, 'H.264 encode not viable on CI runners');
   await page.locator('[data-testid="btn-export"]').click();
   await page.locator('[data-testid="select-quality"]').selectOption('360p');
   const downloadPromise = page.waitForEvent('download', { timeout: 120_000 });
