@@ -34,7 +34,7 @@ export const textView: TrackView<TextTrack> = {
     const right = env.scrollLeft + env.viewportWidth + 40;
     let timedIndex = 0;
     for (let i = 0; i < flat.length; i++) {
-      const { lineIndex, sylIndex, syl } = flat[i];
+      const { syl } = flat[i];
       if (syl.startMs === null) continue;
       const lane = laneOf(timedIndex, threeLanes);
       timedIndex++;
