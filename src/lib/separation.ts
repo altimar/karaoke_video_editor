@@ -87,54 +87,6 @@ const KARAOKE_MODEL: ModelConfig = {
   maskLayout: 'stem',
 };
 
-/**
- * The same karaoke model re-exported natively in fp16 from the ORIGINAL
- * training checkpoint (eval/export-karaoke-onnx.py --half): weights and all
- * internal activations are fp16, the tensor interface stays fp32. Verified
- * against the fp32 export on real audio: mask relRMS diff 2.4%, stems corr
- * 0.9998; ~1.6× faster per chunk on WebGPU and half the download.
- */
-const KARAOKE_MODEL_FP16: ModelConfig = {
-  graphUrl:
-    'https://huggingface.co/Project42/mel-band-roformer-karaoke-webgpu/resolve/main/model_fp16.onnx',
-  // v2: v1 had fp16 RMSNorm (F.normalize) whose sum-of-squares overflowed on
-  // vocal-heavy inputs → exact-zero masks → garbage phase-2 stems. v2 keeps
-  // the norm reductions in fp32.
-  cacheName: 'karaoke-model-fp16-v2',
-  inputLayout: 'frames-major',
-  maskLayout: 'stem',
-};
-
-/** Separation pipelines the user can pick (see SEPARATION_SCHEMES). */
-export type SeparationScheme = 'quality' | 'fast' | 'single';
-
-export const SEPARATION_SCHEMES: ReadonlyArray<{
-  id: SeparationScheme;
-  label: string;
-  hint: string;
-}> = [
-  {
-    id: 'quality',
-    label: 'Две модели — качество',
-    hint: 'Вокал+минус моделью №1, лид/бэк моделью №2 (fp32). Как сейчас.',
-  },
-  {
-    id: 'fast',
-    label: 'Две модели — быстро',
-    hint: 'То же, но модель №2 в fp16: ~1.6× быстрее, загрузка вдвое меньше.',
-  },
-  {
-    id: 'single',
-    label: 'Одной моделью — эксперимент',
-    hint: 'Karaoke-модель сразу на весь микс (все вокалы + минус), затем лид/бэк. Одна загрузка ~460 МБ вместо двух моделей.',
-  },
-];
-
-/** Parse a stored scheme id, falling back to the default. */
-export function parseSeparationScheme(value: string | null): SeparationScheme {
-  return SEPARATION_SCHEMES.some((s) => s.id === value) ? (value as SeparationScheme) : 'quality';
-}
-
 // --- Mel-RoFormer parameters (from the musetric model definition) ---
 /** FFT size. */
 const N_FFT = 2048;
@@ -215,28 +167,20 @@ export interface SeparationResult {
 }
 
 /**
- * FULL two-phase separation, one button, three user-selectable schemes:
+ * FULL two-phase separation, one button:
  *
- *  'quality'  phase 1 (VOCALS_MODEL)      : original → vocals+minus
- *             phase 2 (KARAOKE_MODEL fp32): vocals → lead, back = vocals−lead
- *  'fast'     same, but phase 2 runs KARAOKE_MODEL_FP16
- *  'single'   BOTH phases run KARAOKE_MODEL_FP16: on the mix it estimates ALL
- *             vocals (lead+back; verified on real tracks), on the vocal stem
- *             it estimates the lead. One model download, one warm session.
+ *   phase 1 (VOCALS_MODEL):  original → vocal mask → instrumental = mix − vocals
+ *   phase 2 (KARAOKE_MODEL): vocal stem → lead mask → back = vocals − lead
  *
- * Model sessions are NEVER alive at the same time in the two-model schemes
- * (~0.7–0.9 GB of weights each) — phase 1's session is released before
- * phase 2's is created. Inference progress covers both phases (0–0.5 / 0.5–1);
- * model downloads report through `onDownload` per phase.
+ * The two model sessions are NEVER alive at the same time (each holds
+ * ~0.7–0.9 GB of weights) — phase 1's session is released before phase 2's is
+ * created. Inference progress covers both phases (0–0.5 / 0.5–1); model
+ * downloads report through `onDownload` per phase.
  */
 export async function separateFull(
   originalBytes: Uint8Array,
   cb: SeparationCallbacks = {},
-  scheme: SeparationScheme = 'quality',
 ): Promise<SeparationResult> {
-  const karaokeCfg = scheme === 'quality' ? KARAOKE_MODEL : KARAOKE_MODEL_FP16;
-  const phase1Cfg = scheme === 'single' ? KARAOKE_MODEL_FP16 : VOCALS_MODEL;
-
   // --- Decode + resample to 44.1 kHz stereo (planar). ---
   cb.onStatus?.('Декодирование аудио…');
   const { left, right } = await decodeStereoAt44k(originalBytes);
@@ -247,26 +191,23 @@ export async function separateFull(
   // --- Phase 1: vocals + instrumental. ---
   cb.onStatus?.('Этап 1 из 2: вокал и минус…');
   const ort = await loadOrt();
-  const session1 = await acquireSession(phase1Cfg, cb.onDownload);
+  const session1 = await acquireSession(VOCALS_MODEL, cb.onDownload);
   const { rawL: vocRawL, rawR: vocRawR } = await runMaskModel(
-    phase1Cfg, session1, ort, mixL, mixR,
+    VOCALS_MODEL, session1, ort, mixL, mixR,
     (frac) => cb.onProgress?.(frac * 0.5),
   );
 
-  // Free phase 1's session before phase 2 — EXCEPT in 'single', where both
-  // phases share the same model and the session stays warm.
-  if (phase1Cfg !== karaokeCfg) {
-    session1.release?.();
-    liveSession = null;
-  }
+  // Free phase 1's ~0.7 GB before loading phase 2's model.
+  session1.release?.();
+  liveSession = null;
 
   // --- Phase 2: split the vocal stem into lead + backing. ---
   cb.onStatus?.('Этап 2 из 2: лид и бэк…');
   const vocL = normalizePeak(vocRawL, 0.9);
   const vocR = normalizePeak(vocRawR, 0.9);
-  const session2 = await acquireSession(karaokeCfg, cb.onDownload);
+  const session2 = await acquireSession(KARAOKE_MODEL, cb.onDownload);
   const { rawL: leadRawL, rawR: leadRawR } = await runMaskModel(
-    karaokeCfg, session2, ort, vocL, vocR,
+    KARAOKE_MODEL, session2, ort, vocL, vocR,
     (frac) => cb.onProgress?.(0.5 + frac * 0.5),
   );
 

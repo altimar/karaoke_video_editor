@@ -27,7 +27,7 @@ const MODELS = [
   'http://localhost:5173/local-models/karaoke-clean-fp16-webgpu.onnx',
 ];
 
-const ORIGINAL = process.argv.includes('--audio') ? process.argv[process.argv.indexOf('--audio') + 1] : 'kfn/Monoral_-_Kiri_48050552.mp3';
+const ORIGINAL = 'kfn/Monoral_-_Kiri_48050552.mp3';
 
 function writeWav(path, L, R) {
   const n = Math.min(L.length, R.length);

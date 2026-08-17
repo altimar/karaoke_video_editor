@@ -21,13 +21,13 @@ import {
   clearAudioRole,
   getAudioBytesMap,
 } from '../../lib/audioLoader';
-import { separateFull, getSeparationStatus, parseSeparationScheme } from '../../lib/separation';
+import { separateFull, getSeparationStatus } from '../../lib/separation';
 import { autoAlignTimings, getAlignmentStatus } from '../../lib/forcedAlign';
 import { openVocalBindDialog } from '../vocalBindDialog';
 import { clearBgVideo, getBgVideoBytes } from '../../lib/backgroundVideo';
 import { ensureBgFilmstrip, setFilmstripOnReady } from '../../lib/bgThumbnails';
 import { invalidateBgImageCache } from '../../lib/render';
-import { openSeparationDialog, openSeparationSchemeDialog } from '../separationDialog';
+import { openSeparationDialog } from '../separationDialog';
 import type { ToastFn } from '../controls';
 import { applyBgFile } from '../bgFile';
 import {
@@ -731,20 +731,13 @@ export function createTimeline(toast: ToastFn, opts: TimelineOptions = {}): { ro
       toast('Извлечение недоступно: ' + status.reason, 'err');
       return;
     }
-    // Scheme picker first (persisted choice): quality two-model / fast
-    // two-model fp16 / single experimental — see SEPARATION_SCHEMES.
-    const saved = parseSeparationScheme(localStorage.getItem('separation-scheme'));
-    const scheme = await openSeparationSchemeDialog(saved, (pick) =>
-      localStorage.setItem('separation-scheme', pick),
-    );
-    if (!scheme) return;
     const dialog = openSeparationDialog('Извлечение вокала, минуса и бэка');
     try {
       const { lead, back, instrumental } = await separateFull(original, {
         onDownload: (loaded, total) => dialog.setDownload(total > 0 ? loaded / total : null),
         onStatus: (msg) => dialog.setStatus(msg),
         onProgress: (frac) => dialog.setProgress(frac),
-      }, scheme);
+      });
       // Derive sensible filenames from the original's name.
       const origName =
         getAudioTrackByRole(store.getProject(), 'original')?.audioFileName ?? 'original.mp3';

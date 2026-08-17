@@ -144,10 +144,8 @@ try {
     { timeout: 60_000 },
   );
   if (separate) {
-    console.log('Separating (Mel-RoFormer) — the first run downloads the models…');
+    console.log('Separating (Mel-RoFormer) — the first run downloads ~700 MB…');
     await page.locator('.timeline-track-extract').first().click();
-    // The ✨ click opens the scheme picker — confirm the default scheme.
-    await page.getByTestId('btn-separate-start').click();
     await page.waitForFunction(() => window.__audioEngine && window.__audioEngine.getBuffer('lead'), undefined, {
       timeout: 30 * 60_000,
     });

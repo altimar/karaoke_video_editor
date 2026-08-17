@@ -11,7 +11,6 @@
  * Lifecycle: caller opens the dialog, drives the run, and on completion calls
  * either `close()` (success) or `error()` (failure, which shows the message).
  */
-import { SeparationScheme, SEPARATION_SCHEMES } from '../lib/separation';
 export interface SeparationDialog {
   /** Show the model-download phase (first run only). fraction 0..1, or null if size unknown. */
   setDownload: (fraction: number | null) => void;
@@ -23,95 +22,6 @@ export interface SeparationDialog {
   close: () => void;
   /** Show an error message in place of the progress bar, then let the user dismiss. */
   error: (message: string) => void;
-}
-
-/**
- * Pre-start scheme picker: which separation pipeline to run (see
- * SEPARATION_SCHEMES). Resolves with the chosen scheme id, or null when
- * cancelled — nothing runs until the user confirms here.
- */
-export function openSeparationSchemeDialog(
-  current: SeparationScheme,
-  onChoose?: (scheme: SeparationScheme) => void,
-): Promise<SeparationScheme | null> {
-  const backdrop = document.createElement('div');
-  backdrop.className = 'modal-backdrop';
-  const modal = document.createElement('div');
-  modal.className = 'modal';
-
-  const header = document.createElement('div');
-  header.className = 'modal-header';
-  const title = document.createElement('div');
-  title.className = 'modal-title';
-  title.textContent = 'Извлечение вокала, минуса и бэка';
-  header.appendChild(title);
-  modal.appendChild(header);
-
-  const body = document.createElement('div');
-  body.className = 'modal-body';
-  body.appendChild(document.createElement('div')).textContent = 'Выберите схему разделения:';
-
-  let chosen: SeparationScheme = current;
-  const row = document.createElement('div');
-  row.className = 'scheme-options';
-  const buttons = new Map<SeparationScheme, HTMLButtonElement>();
-  for (const s of SEPARATION_SCHEMES) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'scheme-opt' + (s.id === current ? ' selected' : '');
-    btn.dataset.testid = `scheme-opt-${s.id}`;
-    const label = document.createElement('div');
-    label.className = 'scheme-opt-label';
-    label.textContent = s.label;
-    const hint = document.createElement('div');
-    hint.className = 'scheme-opt-hint';
-    hint.textContent = s.hint;
-    btn.appendChild(label);
-    btn.appendChild(hint);
-    btn.addEventListener('click', () => {
-      chosen = s.id;
-      onChoose?.(chosen);
-      for (const [id, b] of buttons) b.classList.toggle('selected', id === chosen);
-    });
-    buttons.set(s.id, btn);
-    row.appendChild(btn);
-  }
-  body.appendChild(row);
-  modal.appendChild(body);
-
-  const footer = document.createElement('div');
-  footer.className = 'modal-footer';
-  const start = document.createElement('button');
-  start.textContent = 'Разделить';
-  start.dataset.testid = 'btn-separate-start';
-  const cancel = document.createElement('button');
-  cancel.textContent = 'Отмена';
-  cancel.dataset.testid = 'btn-separate-cancel';
-  footer.appendChild(start);
-  footer.appendChild(cancel);
-  modal.appendChild(footer);
-
-  let finish: (v: SeparationScheme | null) => void = () => {};
-  const done = (v: SeparationScheme | null): void => {
-    window.removeEventListener('keydown', onKey);
-    backdrop.remove();
-    finish(v);
-  };
-  const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') done(null);
-  };
-  window.addEventListener('keydown', onKey);
-  start.addEventListener('click', () => done(chosen));
-  cancel.addEventListener('click', () => done(null));
-  backdrop.addEventListener('click', (e) => {
-    if (e.target === backdrop) done(null);
-  });
-
-  backdrop.appendChild(modal);
-  document.body.appendChild(backdrop);
-  return new Promise((resolve) => {
-    finish = resolve;
-  });
 }
 
 export function openSeparationDialog(titleText = 'Извлечение минуса'): SeparationDialog {
