@@ -18,7 +18,7 @@ import { AudioRole, getAudioTrackByRole, getActiveTextTrack, isRoleAudible } fro
 
 export type ToastFn = (msg: string, kind?: 'ok' | 'err' | 'info') => void;
 
-export function createTopbar(toast: ToastFn): {
+export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
   root: HTMLElement;
   refreshAudioState: () => void;
 } {
@@ -140,6 +140,17 @@ export function createTopbar(toast: ToastFn): {
   const spacer = document.createElement('div');
   spacer.className = 'spacer';
   root.appendChild(spacer);
+
+  // --- New project (wizard: audio → lyrics → auto separation + align) ---
+  if (onNewProject) {
+    const newBtn = document.createElement('button');
+    newBtn.className = 'primary';
+    setTopbarButton(newBtn, '✨', 'Новый проект');
+    newBtn.title = 'Мастер: аудио → лирика → готовое караоке';
+    newBtn.dataset.testid = 'btn-new-project';
+    newBtn.addEventListener('click', onNewProject);
+    root.appendChild(newBtn);
+  }
 
   // --- Export (single button → tabbed dialog: Video / Project / KaraFun) ---
   const exportBtn = document.createElement('button');

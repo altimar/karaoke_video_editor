@@ -4,6 +4,7 @@
  */
 import './styles.css';
 import { createTopbar } from './ui/controls';
+import { openNewProjectWizard } from './ui/newProjectWizard';
 import { createLyricsEditor } from './ui/lyricsEditor';
 import { createPreview } from './ui/preview';
 import { createStylePanel } from './ui/stylePanel';
@@ -32,7 +33,12 @@ function main(): void {
   const app = document.getElementById('app')!;
 
   // Topbar
-  const topbar = createTopbar(toast);
+  // The wizard needs the timeline's auto-align runner; the timeline is created
+  // below, so the button's callback goes through a late-bound ref.
+  let runAutoAlign: (trackId: string) => Promise<void> = async () => {};
+  const topbar = createTopbar(toast, () =>
+    openNewProjectWizard({ toast, runAutoAlign: (id) => runAutoAlign(id) }),
+  );
   app.appendChild(topbar.root);
 
   // Build the column components once. Their root nodes are MOVED between the
@@ -78,15 +84,15 @@ function main(): void {
   // Timeline at the bottom. The Фон pseudo-row is selectable like a track:
   // its "settings" are the background card in the style panel (on mobile the
   // sheet opens right away so the selection is visible).
-  app.appendChild(
-    createTimeline(toast, {
-      onBackgroundSelected: () => {
-        style.showBackground();
-        if (window.matchMedia('(max-width: 900px)').matches) propsSheet.open();
-      },
-      onTrackSelected: () => style.showTrack(),
-    }).root,
-  );
+  const timeline = createTimeline(toast, {
+    onBackgroundSelected: () => {
+      style.showBackground();
+      if (window.matchMedia('(max-width: 900px)').matches) propsSheet.open();
+    },
+    onTrackSelected: () => style.showTrack(),
+  });
+  runAutoAlign = timeline.runAutoAlign;
+  app.appendChild(timeline.root);
 
   const fab = document.createElement('button');
   fab.className = 'props-fab';

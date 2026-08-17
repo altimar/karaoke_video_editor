@@ -52,7 +52,10 @@ export interface TimelineOptions {
   onTrackSelected?: () => void;
 }
 
-export function createTimeline(toast: ToastFn, opts: TimelineOptions = {}): { root: HTMLElement } {
+export function createTimeline(
+  toast: ToastFn,
+  opts: TimelineOptions = {},
+): { root: HTMLElement; runAutoAlign: (trackId: string) => Promise<void> } {
   const root = document.createElement('div');
   root.className = 'timeline';
 
@@ -1022,5 +1025,5 @@ export function createTimeline(toast: ToastFn, opts: TimelineOptions = {}): { ro
   renderGutter();
   requestAnimationFrame(draw);
 
-  return { root };
+  return { root, runAutoAlign };
 }
