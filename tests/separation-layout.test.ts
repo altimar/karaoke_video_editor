@@ -15,18 +15,18 @@ const N_BINS = 1025;
 const FRAMES = 1101;
 
 /** Synthetic stereo STFT with distinct known values. */
-function makeSpecs() {
+function makeSpecs(nFrames: number = FRAMES) {
   const mk = (salt: number) => {
-    const real = new Float32Array(N_BINS * FRAMES);
-    const imag = new Float32Array(N_BINS * FRAMES);
-    for (let t = 0; t < FRAMES; t++) {
+    const real = new Float32Array(N_BINS * nFrames);
+    const imag = new Float32Array(N_BINS * nFrames);
+    for (let t = 0; t < nFrames; t++) {
       for (let f = 0; f < N_BINS; f++) {
         const i = t * N_BINS + f;
         real[i] = ((i * 7 + salt) % 97) / 97 - 0.5;
         imag[i] = ((i * 13 + salt) % 89) / 89 - 0.5;
       }
     }
-    return { real, imag, nBins: N_BINS, nFrames: FRAMES };
+    return { real, imag, nBins: N_BINS, nFrames };
   };
   return { specL: mk(1), specR: mk(2) };
 }
@@ -55,9 +55,8 @@ test('identity mask round-trips through both mask layouts', () => {
   for (const layout of ['flat', 'stem'] as const) {
     const { specL, specR } = makeSpecs();
     // Identity complex mask (1+0i) in the layout's own walk.
-    const stride = layout === 'flat' ? FRAMES : FRAMES;
-    const masks = new Float32Array(2050 * stride * 2);
-    for (let i = 0; i < 2050 * stride; i++) masks[i * 2] = 1;
+    const masks = new Float32Array(2050 * FRAMES * 2);
+    for (let i = 0; i < 2050 * FRAMES; i++) masks[i * 2] = 1;
     const outL = applyMask(layout, specL, masks, 0, FRAMES);
     for (let i = 0; i < N_BINS * FRAMES; i++) {
       assert(Math.abs(outL.real[i] - specL.real[i]) < 1e-7, `${layout}: real round-trip at ${i}`);
@@ -68,7 +67,7 @@ test('identity mask round-trips through both mask layouts', () => {
   }
 });
 
-test('stem mask stride differs from flat when frames < FRAMES', () => {
+test('spike mask survives at the documented index', () => {
   const frames = 300;
   const { specL } = makeSpecs();
   const masks = new Float32Array(2050 * frames * 2);
@@ -76,6 +75,34 @@ test('stem mask stride differs from flat when frames < FRAMES', () => {
   const f = 2, ch = 1, t = 10;
   masks[((2 * f + ch) * frames + t) * 2] = 1;
   const out = applyMask('stem', specL, masks, ch, frames);
+  let nonZero = 0;
+  for (let i = 0; i < out.real.length; i++) if (Math.abs(out.real[i]) > 1e-9) nonZero++;
+  assert(nonZero === 1, `only one bin survives the spike mask (got ${nonZero})`);
+});
+
+test('shrunk chunk: pack zero-pads a short STFT to the model frames', () => {
+  const frames = 500; // model time axis (adapter-shrunk window)
+  const { specL } = makeSpecs(300); // shorter STFT (short final chunk)
+  const packed = packStft('frames-major', specL, specL, frames);
+  assert(packed.length === frames * 4100, `padded total length (got ${packed.length})`);
+  const f = 100, t = 250; // inside the real frames
+  assert(packed[t * 4100 + (2 * f) * 2] === specL.real[t * N_BINS + f], 'real at (f,t)');
+  // Frames beyond the STFT stay zero-padded.
+  const t2 = 450;
+  let sum = 0;
+  for (let i = t2 * 4100; i < (t2 + 1) * 4100; i++) sum += Math.abs(packed[i]);
+  assert(sum === 0, `padded frame is all zeros (got sum ${sum})`);
+});
+
+test('shrunk chunk: mask stride follows the model frames, not the spec length', () => {
+  const frames = 500;
+  const { specL } = makeSpecs(300);
+  // The model returns masks laid out over the PADDED T=500.
+  const masks = new Float32Array(2050 * frames * 2);
+  const f = 2, ch = 1, t = 10;
+  masks[((2 * f + ch) * frames + t) * 2] = 1;
+  const out = applyMask('stem', specL, masks, ch, frames);
+  assert(out.nFrames === 300, `output truncated to the spec frames (got ${out.nFrames})`);
   let nonZero = 0;
   for (let i = 0; i < out.real.length; i++) if (Math.abs(out.real[i]) > 1e-9) nonZero++;
   assert(nonZero === 1, `only one bin survives the spike mask (got ${nonZero})`);

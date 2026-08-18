@@ -14,9 +14,12 @@
  *
  * Pipeline (per the musetric host reference):
  *  - Decode + resample to 44.1 kHz stereo.
- *  - Chunk into 485100-sample windows (~11 s) stepping every 352800 (8 s).
+ *  - Chunk into ~11 s windows (485100 samples, 1101 STFT frames) stepping
+ *    every 8 s — or SHORTER windows when the adapter's WebGPU buffer limit
+ *    can't fit the model's attention (see ModelConfig.attentionBytesPerFrameSq
+ *    and resolveFrames; Windows/D3D12 caps buffers at 2GiB).
  *  - Per chunk: STFT (n_fft=2048, hop=441, periodic Hann, center) → pack to
- *    [1, 2050, 1101, 2] (packed = 2*freq + channel, last dim [re,im]) →
+ *    the model's layout (packed = 2*freq + channel, last dim [re,im]) →
  *    model.run → masks → complex-multiply with STFT → iSTFT → vocal PCM.
  *  - Track-level overlap-add with a Hamming window → final vocals.
  *  - Lead = normalized vocals. Instrumental = normalizePeak(mix) − raw vocals.
@@ -53,6 +56,16 @@ export interface ModelConfig {
    * - 'stem' — [1, 1, 2050, T, 2], a leading single-stem axis (bdsqlsz)
    */
   maskLayout: 'flat' | 'stem';
+  /**
+   * GPU bytes per SQUARED frame of the model's biggest inference buffer, for
+   * models with a DYNAMIC time axis. Mel-band attention materializes
+   * bands·heads·T²·4 bytes (fp32 scores) in ONE GPU buffer — at T=1101 the
+   * karaoke model needs 60·8·1101²·4 ≈ 2.33 GB, over the 2 GiB maxBufferSize
+   * Chrome/D3D12 (Windows) reports, and WebGPU CreateBuffer fails outright.
+   * Set → the chunk shrinks to fit the adapter (see resolveFrames). Omitted →
+   * the model always runs the full FRAMES window (static time axis).
+   */
+  attentionBytesPerFrameSq?: number;
 }
 
 /**
@@ -86,6 +99,8 @@ const KARAOKE_MODEL: ModelConfig = {
   cacheName: 'karaoke-model-v1',
   inputLayout: 'frames-major',
   maskLayout: 'stem',
+  // 60 mel bands × 8 attention heads × 4 B fp32 per frame² (see ModelConfig).
+  attentionBytesPerFrameSq: 60 * 8 * 4,
 };
 
 // --- Mel-RoFormer parameters (from the musetric model definition) ---
@@ -93,17 +108,66 @@ const KARAOKE_MODEL: ModelConfig = {
 const N_FFT = 2048;
 /** Hop length between STFT frames. */
 const HOP = 441;
-/** Model time dimension (frames per chunk). */
+/** Model time dimension (frames per chunk) — the FULL window. Models with a
+ *  static time axis always run exactly FRAMES; dynamic ones may run fewer. */
 const FRAMES = 1101;
 /** Packed frequency dimension: (n_fft/2 + 1) * channels = 1025 * 2. */
 const PACKED_BINS = (N_FFT / 2 + 1) * 2; // 2050
 /** One-sided frequency bins. */
 const N_BINS = N_FFT / 2 + 1; // 1025
-/** Samples per chunk: hop * (frames - 1) = 441 * 1100 = 485100 (~11 s). */
+/** Samples per full chunk: hop * (frames - 1) = 441 * 1100 = 485100 (~11 s). */
 const CHUNK_SAMPLES = HOP * (FRAMES - 1);
-/** Step between chunks (8 s) — overlap = chunkSamples - step = ~3 s. */
+/** Step between full chunks (8 s) — overlap = chunkSamples - step = ~3 s. */
 const STEP_SAMPLES = 8 * 44100; // 352800
+/** Step duty cycle kept for shrunk windows: step = chunk × STEP/CHUNK (~73%). */
+const STEP_RATIO = STEP_SAMPLES / CHUNK_SAMPLES;
 const SAMPLE_RATE = 44100;
+
+/**
+ * When the full window doesn't fit the adapter's buffers, shrink with this
+ * headroom over the strict limit: more than one attention-sized buffer is
+ * alive at a time (scores, softmax output, …) and the ~0.9 GB of weights
+ * share the same VRAM. Memory scales quadratically with frames, so halving
+ * the byte budget quarters every big buffer.
+ */
+const ATTENTION_HEADROOM = 2;
+/** Frames floor (~4.4 s window): never shrink further, quality bottom line. */
+const MIN_FRAMES = 400;
+
+/** Memoized adapter maxBufferSize in bytes (0 when no adapter). */
+let maxBufferBytesPromise: Promise<number> | null = null;
+
+function queryMaxBufferBytes(): Promise<number> {
+  maxBufferBytesPromise ??= (async () => {
+    try {
+      const adapter = await navigator.gpu.requestAdapter({
+        powerPreference: 'high-performance',
+      });
+      return adapter?.limits.maxBufferSize ?? 0;
+    } catch {
+      return 0;
+    }
+  })();
+  return maxBufferBytesPromise;
+}
+
+/**
+ * Frames per chunk for a model run. The full FRAMES window is kept whenever
+ * its biggest attention buffer fits the adapter's maxBufferSize (e.g. macOS
+ * Metal reports a high limit — nothing changes there). When it does NOT fit
+ * (Windows/D3D12 caps WebGPU buffers at 2GiB, where a 60-band attention over
+ * 1101 frames needs a single 2.33 GB buffer), the window shrinks so every
+ * attention buffer fits with ATTENTION_HEADROOM room to spare.
+ */
+async function resolveFrames(cfg: ModelConfig): Promise<number> {
+  if (!cfg.attentionBytesPerFrameSq) return FRAMES;
+  const maxBuffer = await queryMaxBufferBytes();
+  if (!maxBuffer) return FRAMES; // no adapter — ORT will fail with its own error
+  if (cfg.attentionBytesPerFrameSq * FRAMES * FRAMES <= maxBuffer) return FRAMES;
+  const budget = maxBuffer / ATTENTION_HEADROOM;
+  const maxFrames = Math.floor(Math.sqrt(budget / cfg.attentionBytesPerFrameSq));
+  return Math.max(MIN_FRAMES, Math.min(FRAMES, maxFrames));
+}
 
 /** CDN build of onnxruntime-web with the WebGPU EP. MUST be the 1.29 dev build —
  *  the Mel-RoFormer graph uses ops/formats unsupported in stable 1.21, which
@@ -262,28 +326,33 @@ async function runMaskModel(
   onProgress: (fraction: number) => void,
 ): Promise<{ rawL: Float32Array; rawR: Float32Array }> {
   const nSamples = inL.length;
-  const window = hammingWindow(CHUNK_SAMPLES);
+  // Chunk geometry for THIS model: the full ~11 s window, or a shrunk one on
+  // adapters whose buffer limit can't fit the attention (see resolveFrames).
+  const frames = await resolveFrames(cfg);
+  const chunkSamples = HOP * (frames - 1);
+  const stepSamples = Math.round(chunkSamples * STEP_RATIO);
+  const window = hammingWindow(chunkSamples);
   const targetL = new Float32Array(nSamples);
   const targetR = new Float32Array(nSamples);
   const countL = new Float32Array(nSamples);
   const countR = new Float32Array(nSamples);
 
-  const nChunks = Math.max(1, Math.ceil((nSamples - CHUNK_SAMPLES) / STEP_SAMPLES) + 1);
+  const nChunks = Math.max(1, Math.ceil((nSamples - chunkSamples) / stepSamples) + 1);
   let chunkIndex = 0;
-  for (let offset = 0; offset < nSamples; offset += STEP_SAMPLES) {
+  for (let offset = 0; offset < nSamples; offset += stepSamples) {
     chunkIndex++;
-    const cw = getChunkWindow(offset, nSamples);
-    const chunkL = new Float32Array(CHUNK_SAMPLES);
-    const chunkR = new Float32Array(CHUNK_SAMPLES);
+    const cw = getChunkWindow(offset, nSamples, chunkSamples);
+    const chunkL = new Float32Array(chunkSamples);
+    const chunkR = new Float32Array(chunkSamples);
     for (let i = 0; i < cw.length; i++) {
       chunkL[i] = inL[cw.start + i];
       chunkR[i] = inR[cw.start + i];
     }
-    const { vocL, vocR } = await processChunk(cfg, session, ort, chunkL, chunkR);
+    const { vocL, vocR } = await processChunk(cfg, session, ort, chunkL, chunkR, frames);
     overlapAdd(targetL, countL, vocL, cw.start, cw.length, window);
     overlapAdd(targetR, countR, vocR, cw.start, cw.length, window);
     onProgress(chunkIndex / nChunks);
-    if (offset + STEP_SAMPLES >= nSamples) break;
+    if (offset + stepSamples >= nSamples) break;
   }
   onProgress(1);
   return {
@@ -503,18 +572,17 @@ async function processChunk(
   ort: OrtModule,
   chunkL: Float32Array,
   chunkR: Float32Array,
+  frames: number,
 ): Promise<{ vocL: Float32Array; vocR: Float32Array }> {
   // STFT both channels (center=True, periodic Hann, n_fft=2048, hop=441).
   const specL = stft(chunkL, { nFft: N_FFT, hop: HOP });
   const specR = stft(chunkR, { nFft: N_FFT, hop: HOP });
-  // Pad/truncate the frame axis to exactly FRAMES (model expects T=1101).
-  // STFT of CHUNK_SAMPLES yields 1 + floor(CHUNK/HOP) = 1 + 1100 = 1101 frames,
-  // so no padding is normally needed — but guard defensively.
-  const frames = Math.min(specL.nFrames, FRAMES);
+  // The model's time axis: chunkSamples = HOP·(frames−1) STFTs into exactly
+  // `frames` frames; a shorter final chunk zero-pads inside packStft.
 
   // Pack into the model's input layout (packed bins = 2*freq + channel).
   const input = packStft(cfg.inputLayout, specL, specR, frames);
-  const dims = cfg.inputLayout === 'bins-major' ? [1, PACKED_BINS, FRAMES, 2] : [1, FRAMES, PACKED_BINS * 2];
+  const dims = cfg.inputLayout === 'bins-major' ? [1, PACKED_BINS, frames, 2] : [1, frames, PACKED_BINS * 2];
   const inputTensor = new ort.Tensor('float32', input, dims);
 
   const feeds: Record<string, unknown> = {};
@@ -538,7 +606,8 @@ async function processChunk(
 }
 
 /**
- * Pack two channel STFTs into the model input.
+ * Pack two channel STFTs into the model input, `frames` = the model's time
+ * axis. A shorter STFT zero-pads up to `frames` (the model sees T=frames).
  * - 'bins-major'  → [1, 2050, T, 2]: index = ((2f+ch)·T + t)·2 + ri
  * - 'frames-major'→ [1, T, 4100]:    index = t·4100 + (2f+ch)·2 + ri
  */
@@ -548,15 +617,16 @@ export function packStft(
   specR: { real: Float32Array; imag: Float32Array; nBins: number; nFrames: number },
   frames: number,
 ): Float32Array {
-  const out = new Float32Array(PACKED_BINS * FRAMES * 2);
+  const out = new Float32Array(PACKED_BINS * frames * 2);
+  const fill = Math.min(specL.nFrames, frames);
   for (let freq = 0; freq < N_BINS; freq++) {
     for (let channel = 0; channel < 2; channel++) {
       const packed = 2 * freq + channel;
       const spec = channel === 0 ? specL : specR;
-      for (let frame = 0; frame < frames; frame++) {
+      for (let frame = 0; frame < fill; frame++) {
         const src = frame * spec.nBins + freq;
         const dst = layout === 'bins-major'
-          ? (packed * FRAMES + frame) * 2
+          ? (packed * frames + frame) * 2
           : frame * PACKED_BINS * 2 + packed * 2;
         out[dst] = spec.real[src];
         out[dst + 1] = spec.imag[src];
@@ -567,8 +637,10 @@ export function packStft(
 }
 
 /**
- * Apply a channel's mask to its STFT via complex multiplication, returning a new
- * ComplexSTFT (truncated to `frames` if needed). `(a+bi)*(c+di) = (ac−bd)+(ad+bc)i`.
+ * Apply a channel's mask to its STFT via complex multiplication, `frames` =
+ * the model's time axis (the mask is laid out over the padded T). Returns the
+ * masked STFT truncated to the spec's real frame count. `(a+bi)*(c+di) =
+ * (ac−bd)+(ad+bc)i`.
  * - 'flat' — mask laid out like the bins-major input: ((2f+ch)·T + t)·2 + ri
  * - 'stem' — [1, 1, 2050, T, 2]: ((2f+ch)·T + t)·2 + ri (same walk, stem axis = 0)
  */
@@ -579,18 +651,17 @@ export function applyMask(
   channel: number,
   frames: number,
 ): { real: Float32Array; imag: Float32Array; nBins: number; nFrames: number } {
-  const real = new Float32Array(spec.nBins * frames);
-  const imag = new Float32Array(spec.nBins * frames);
-  // Frame stride of the mask array: the 'flat' layout mirrors the padded input
-  // (FRAMES entries), the 'stem' layout returns exactly the input frame count.
-  const stride = layout === 'flat' ? FRAMES : frames;
+  void layout; // both layouts walk the mask identically: ((2f+ch)·frames + t)·2 + ri
+  const fill = Math.min(spec.nFrames, frames);
+  const real = new Float32Array(spec.nBins * fill);
+  const imag = new Float32Array(spec.nBins * fill);
   for (let freq = 0; freq < spec.nBins; freq++) {
     const packed = 2 * freq + channel;
-    for (let frame = 0; frame < frames; frame++) {
+    for (let frame = 0; frame < fill; frame++) {
       const src = frame * spec.nBins + freq;
       const a = spec.real[src];
       const b = spec.imag[src];
-      const m = (packed * stride + frame) * 2;
+      const m = (packed * frames + frame) * 2;
       const c = masks[m];
       const d = masks[m + 1];
       const dst = frame * spec.nBins + freq;
@@ -598,7 +669,7 @@ export function applyMask(
       imag[dst] = a * d + b * c;
     }
   }
-  return { real, imag, nBins: spec.nBins, nFrames: frames };
+  return { real, imag, nBins: spec.nBins, nFrames: fill };
 }
 
 /** Peak-normalize a signal so its max absolute amplitude is `peak`. */
@@ -629,15 +700,16 @@ function hammingWindow(n: number): Float32Array {
 function getChunkWindow(
   offset: number,
   nSamples: number,
+  chunkSamples: number,
 ): { start: number; length: number } {
-  if (offset + CHUNK_SAMPLES <= nSamples) {
-    return { start: offset, length: CHUNK_SAMPLES };
+  if (offset + chunkSamples <= nSamples) {
+    return { start: offset, length: chunkSamples };
   }
-  if (nSamples <= CHUNK_SAMPLES) {
+  if (nSamples <= chunkSamples) {
     return { start: 0, length: nSamples };
   }
   // Last partial chunk: shift back so it's full-length.
-  return { start: nSamples - CHUNK_SAMPLES, length: CHUNK_SAMPLES };
+  return { start: nSamples - chunkSamples, length: chunkSamples };
 }
 
 /** Overlap-add a chunk into a target accumulator with the given window. */

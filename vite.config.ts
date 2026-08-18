@@ -14,6 +14,11 @@ export default defineConfig({
       'Cross-Origin-Opener-Policy': 'same-origin',
       'Cross-Origin-Embedder-Policy': 'require-corp',
     },
+    // Local-only bulk (KFN fixtures often locked by the KaraFun player,
+    // ~1 GB of probe models) — watching these crashes the dev server (EBUSY).
+    watch: {
+      ignored: ['**/kfn/**', '**/public/local-models/**'],
+    },
   },
   // mediabunny ships ESM with browser field; Vite resolves it natively.
   optimizeDeps: {
