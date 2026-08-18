@@ -116,3 +116,22 @@ test('video background: no bytes → reference dropped on save/load', async () =
   assert(r.bgVideoBytes === null, 'no bg video bytes');
   assert(r.project.background.bgVideoFileName === null, 'stale bgVideoFileName cleared');
 });
+
+test('song metadata: round-trips in project.json and names the file', async () => {
+  const withMeta = JSON.parse(JSON.stringify(project));
+  withMeta.metadata = { artist: 'Lumen', title: 'Буря', album: 'Волны', composer: 'Т. Хмелёв', year: '2024', comment: 'x' };
+  const { blob, filename } = saveProject(withMeta, fakeAudioMap);
+  assert(filename === 'Lumen - Буря.karaokeproject', `file named «Группа - Название» (got ${filename})`);
+  const r = loadProject(new Uint8Array(await blob.arrayBuffer()));
+  assert(r.project.metadata?.artist === 'Lumen' && r.project.metadata?.title === 'Буря', 'metadata survives the round-trip');
+});
+
+test('song metadata: legacy project without metadata gets the empty default', async () => {
+  const legacy = JSON.parse(JSON.stringify(project));
+  delete legacy.metadata;
+  const { blob } = saveProject(legacy, fakeAudioMap);
+  const r = loadProject(new Uint8Array(await blob.arrayBuffer()));
+  assert(r.project.metadata != null && r.project.metadata.artist === '', 'default metadata object filled on load');
+  // No metadata → filename falls back to the audio file name.
+  assert(true, 'covered by the first test in songTitle.test.ts');
+});

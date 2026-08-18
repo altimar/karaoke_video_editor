@@ -177,6 +177,29 @@ export interface Project {
   fps: number;
   width: number;
   height: number;
+  /** Song metadata (artist, title, …) — round-trips through KFN [General]. */
+  metadata: ProjectMetadata;
+}
+
+/**
+ * Song metadata. Maps onto the KFN `[General]` fields (and the container
+ * header's TITL/ARTS); also names exported files («Группа - Название»).
+ * Year is a free-form string (KFN stores `Year=` as text).
+ */
+export interface ProjectMetadata {
+  /** Исполнитель / группа. */
+  artist: string;
+  /** Название песни. */
+  title: string;
+  album: string;
+  composer: string;
+  year: string;
+  comment: string;
+}
+
+/** Empty metadata for a fresh project. */
+export function createProjectMetadata(): ProjectMetadata {
+  return { artist: '', title: '', album: '', composer: '', year: '', comment: '' };
 }
 
 /** One point on the volume automation envelope. */
@@ -355,5 +378,6 @@ export function createDefaultProject(): Project {
     fps: 30,
     width: 1920,
     height: 1080,
+    metadata: createProjectMetadata(),
   };
 }

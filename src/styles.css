@@ -1165,3 +1165,19 @@ textarea.lyrics {
 .timeline-track-head.pair-bottom.active {
   border-top: 1px solid var(--accent);
 }
+
+/* ---------- Song metadata dialog ---------- */
+.meta-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.meta-form > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.meta-form label {
+  font-size: 12px;
+  color: var(--text-dim);
+}

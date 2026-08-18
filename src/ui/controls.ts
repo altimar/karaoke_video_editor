@@ -14,7 +14,9 @@ import { saveProject, loadProject } from '../lib/projectFile';
 import { getAudioBytesMap, setAudioBytesMap } from '../lib/audioLoader';
 import { loadBgVideo, clearBgVideo, getBgVideoBytes } from '../lib/backgroundVideo';
 import { openExportDialog } from './exportDialog';
-import { AudioRole, getAudioTrackByRole, getActiveTextTrack, isRoleAudible } from '../types';
+import { openMetadataDialog } from './metadataDialog';
+import { songBaseName } from '../lib/songTitle';
+import { AudioRole, getAudioTrackByRole, getActiveTextTrack, isRoleAudible, ProjectMetadata } from '../types';
 
 export type ToastFn = (msg: string, kind?: 'ok' | 'err' | 'info') => void;
 
@@ -114,6 +116,7 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
           p.activeTrackId = result.project.tracks[0].id;
           p.durationMs = audioEngine.durationMs;
           p.background = result.project.background;
+          p.metadata = result.project.metadata;
         });
         invalidateBgImageCache();
         const n = result.project.tracks.filter((t) => t.type === 'text').length;
@@ -124,7 +127,7 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
           await audioEngine.loadBytes(role, data, role);
         }
         setAudioBytesMap(result.audioByRole);
-        if (result.bgVideoBytes) loadBgVideo(result.bgVideoBytes);
+        if (result.bgVideoBytes) await loadBgVideo(result.bgVideoBytes);
         else clearBgVideo();
         store.setProject(result.project);
         invalidateBgImageCache();
@@ -140,6 +143,19 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
   const spacer = document.createElement('div');
   spacer.className = 'spacer';
   root.appendChild(spacer);
+
+  // --- Song metadata (artist/title/… → export file name + KFN [General]) ---
+  const metaBtn = document.createElement('button');
+  setTopbarButton(metaBtn, '𝄞', 'Свойства');
+  metaBtn.title = 'Свойства песни: группа, название, год…';
+  metaBtn.dataset.testid = 'btn-metadata';
+  metaBtn.addEventListener('click', () => {
+    openMetadataDialog(store.getProject(), (m: ProjectMetadata) => {
+      store.mutate((p) => (p.metadata = m));
+      toast('Метаданные сохранены', 'ok');
+    });
+  });
+  root.appendChild(metaBtn);
 
   // --- New project (wizard: audio → lyrics → auto separation + align) ---
   if (onNewProject) {
@@ -215,13 +231,14 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
 
     dialog.promise
       .then(async (choice) => {
-        // Output filename: prefer minus, else back, else original.
+        // Output filename: song metadata («Группа - Название») when filled,
+        // else the loaded audio's name (minus → back → original).
         const srcName =
           getAudioTrackByRole(store.getProject(), 'minus')?.audioFileName ||
           getAudioTrackByRole(store.getProject(), 'back')?.audioFileName ||
           getAudioTrackByRole(store.getProject(), 'original')?.audioFileName ||
           'karaoke';
-        const baseName = srcName.replace(/\.[^.]+$/, '');
+        const baseName = songBaseName(store.getProject(), srcName.replace(/\.[^.]+$/, ''));
 
         if (choice.format === 'project') {
           // Save the editable project file — no audio required.

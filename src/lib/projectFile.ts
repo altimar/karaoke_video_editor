@@ -16,7 +16,8 @@
  * are moved into separate ZIP entries and re-inlined on load.
  */
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
-import { AudioRole, AudioTrack, Project } from '../types';
+import { AudioRole, AudioTrack, Project, createProjectMetadata } from '../types';
+import { songBaseName } from './songTitle';
 
 /** Magic entry name for the project metadata inside the container. */
 const PROJECT_JSON = 'project.json';
@@ -123,10 +124,12 @@ export function saveProject(
   files[PROJECT_JSON] = strToU8(JSON.stringify(meta, null, 2));
   const zipped = zipSync(files, { level: 0 });
 
-  const base = (project.tracks.find((t): t is AudioTrack => t.type === 'audio' && t.audioFileName.length > 0)?.audioFileName ?? 'karaoke-project');
+  // File name: song metadata («Группа - Название») when filled, else the first
+  // loaded audio track's filename.
+  const audioBase = (project.tracks.find((t): t is AudioTrack => t.type === 'audio' && t.audioFileName.length > 0)?.audioFileName ?? 'karaoke-project').replace(/\.[^.]+$/, '');
   return {
     blob: new Blob([zipped], { type: 'application/zip' }),
-    filename: `${base.replace(/\.[^.]+$/, '')}.karaokeproject`,
+    filename: `${songBaseName(project, audioBase)}.karaokeproject`,
   };
 }
 
@@ -140,6 +143,9 @@ export function loadProject(data: Uint8Array): LoadProjectResult {
     throw new Error('project.json не найден в файле проекта');
   }
   const meta = JSON.parse(strFromU8(unzipped[PROJECT_JSON])) as Project;
+  // Projects saved before song metadata existed have no `metadata` field —
+  // fill the empty default so consumers can rely on it.
+  meta.metadata ??= createProjectMetadata();
 
   // Collect each role's raw bytes from the audio/* entries.
   const audioByRole = new Map<AudioRole, Uint8Array>();
