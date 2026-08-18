@@ -1,20 +1,22 @@
 /**
- * Alignment model registry + automatic model choice by the lyrics' script.
+ * Alignment model registry + model choice.
  *
- * Two checkpoints, same wav2vec2-CTC ONNX interface (16 kHz input, one frame
- * per 320 samples, CTC logits per frame):
+ * ONE production checkpoint — the MULTILINGUAL MMS forced aligner — used for
+ * every language, English included. The English A/B on the soul fixture
+ * (eval/results/: median 5.6 s / p90 8.1 s for MMS vs 25.2 s / 66.9 s for
+ * wav2vec2-large) showed the ASR-repurposed English checkpoint locks onto
+ * repeated choruses and drifts; MMS is trained FOR alignment and stays
+ * closer. A single model also means one ~630 MB download regardless of the
+ * lyrics' script. Any script works because text is uroman-romanized first
+ * (alignment/romanize.ts). Weight license: CC-BY-NC-4.0.
  *
- *  - ENGLISH (historical): wav2vec2-large-960h-lv60-self, fp16 ~630 MB —
- *    uppercase A–Z + apostrophe vocab (32 tokens, `<pad>`=blank, `|` word
- *    separator). Benchmarked on English (eval/results/, p90 247 ms).
- *  - MULTILINGUAL: MMS forced aligner (facebook/mms-300m trained for
- *    alignment on 1130 languages), fp16 ~630 MB — lowercase romanized a–z +
- *    apostrophe vocab (31 tokens, `<blank>`=0, NO word separator). Any script
- *    works because text is uroman-romanized first (alignment/romanize.ts).
- *    Weight license: CC-BY-NC-4.0.
+ * The ENGLISH config is kept for the eval harness (comparing checkpoints
+ * that share its vocab); production never picks it.
  *
- * The pipeline (forcedAlign.ts) is model-agnostic: it just consumes the
- * config (vocab, case, word separator, url).
+ * Both checkpoints share the wav2vec2-CTC ONNX interface (16 kHz input, one
+ * frame per 320 samples, CTC logits per frame). The pipeline (forcedAlign.ts)
+ * is model-agnostic: it just consumes the config (vocab, case, word
+ * separator, url).
  */
 
 /** Everything the alignment pipeline needs to run one checkpoint. */
@@ -38,7 +40,11 @@ export interface AlignModelConfig {
   romanize: boolean;
 }
 
-/** wav2vec2-large-960h-lv60-self (our fp16 ONNX export, eval/export-large-align.py). */
+/**
+ * wav2vec2-large-960h-lv60-self (our fp16 ONNX export,
+ * eval/export-large-align.py). NOT used in production — the eval harness
+ * builds comparison overrides on top of this config.
+ */
 export const ENGLISH_ALIGN_MODEL: AlignModelConfig = {
   id: 'en',
   label: 'английская',
@@ -80,19 +86,24 @@ export const MULTILINGUAL_ALIGN_MODEL: AlignModelConfig = {
 };
 
 /**
- * Pick the alignment model for a piece of lyrics text: any non-ASCII letters
- * (Cyrillic, umlauts, other scripts) → the multilingual MMS checkpoint;
- * pure-ASCII-Latin text stays on the proven English checkpoint.
+ * The alignment model for a piece of lyrics text: always the multilingual MMS
+ * checkpoint — it matched or beat the English one on English lyrics (see the
+ * module doc) and works for every script via romanization. The text parameter
+ * is kept for interface stability (future per-script switches).
  */
-export function pickAlignModel(text: string): AlignModelConfig {
-  for (const ch of text) {
-    const code = ch.codePointAt(0)!;
-    if (code < 128) continue; // ASCII: letters handled by the en vocab or dropped
-    if (isLetter(ch)) return MULTILINGUAL_ALIGN_MODEL;
-  }
-  return ENGLISH_ALIGN_MODEL;
+export function pickAlignModel(_text: string): AlignModelConfig {
+  return MULTILINGUAL_ALIGN_MODEL;
 }
 
-function isLetter(ch: string): boolean {
-  return /\p{L}/u.test(ch);
+/**
+ * Resolve an eval preset into a concrete model config, optionally swapping the
+ * checkpoint URL/cache (for same-vocab comparison checkpoints).
+ */
+export function resolveAlignModelOverride(
+  preset: 'en' | 'multi',
+  url?: string,
+  cacheName?: string,
+): AlignModelConfig {
+  const base = preset === 'en' ? ENGLISH_ALIGN_MODEL : MULTILINGUAL_ALIGN_MODEL;
+  return url && cacheName ? { ...base, url, cacheName } : base;
 }

@@ -5,7 +5,7 @@
  */
 import { test } from 'vitest';
 import { romanizeWord } from '../src/lib/alignment/romanize';
-import { pickAlignModel, ENGLISH_ALIGN_MODEL, MULTILINGUAL_ALIGN_MODEL } from '../src/lib/alignment/models';
+import { pickAlignModel, resolveAlignModelOverride, ENGLISH_ALIGN_MODEL, MULTILINGUAL_ALIGN_MODEL } from '../src/lib/alignment/models';
 import { buildWords, buildTranscript, flattenSyllablesForAlignment } from '../src/lib/alignment/ctc';
 import { Line } from '../src/types';
 
@@ -51,13 +51,23 @@ test('romanizeWord: ASCII passes through, punctuation dropped, case-insensitive'
 
 // --- pickAlignModel ---
 
-test('pickAlignModel: pure-ASCII Latin → English, any other letters → multilingual', () => {
-  assert(pickAlignModel('Hello world') === ENGLISH_ALIGN_MODEL, 'pure ASCII → en');
-  assert(pickAlignModel("don't stop") === ENGLISH_ALIGN_MODEL, 'apostrophe is ASCII → en');
-  assert(pickAlignModel('Привет, как дела') === MULTILINGUAL_ALIGN_MODEL, 'Cyrillic → multi');
-  assert(pickAlignModel('schön') === MULTILINGUAL_ALIGN_MODEL, 'umlaut → multi');
-  assert(pickAlignModel('Hello Привет') === MULTILINGUAL_ALIGN_MODEL, 'mixed → multi');
-  assert(pickAlignModel('123 !!! ...') === ENGLISH_ALIGN_MODEL, 'no letters → en (no-op run)');
+test('pickAlignModel: ONE model for every script (MMS)', () => {
+  // The English checkpoint lost the English A/B (repeated-chorus drift —
+  // eval/results/ soul runs) and was retired from production; MMS covers
+  // every script via romanization.
+  assert(pickAlignModel('Hello world') === MULTILINGUAL_ALIGN_MODEL, 'pure ASCII → MMS');
+  assert(pickAlignModel('Привет, как дела') === MULTILINGUAL_ALIGN_MODEL, 'Cyrillic → MMS');
+  assert(pickAlignModel('123 !!! ...') === MULTILINGUAL_ALIGN_MODEL, 'no letters → MMS (no-op run)');
+});
+
+test('resolveAlignModelOverride: presets + URL swap for same-vocab checkpoints', () => {
+  const en = resolveAlignModelOverride('en');
+  assert(en.id === 'en' && en.vocabSize === ENGLISH_ALIGN_MODEL.vocabSize, 'en preset keeps the English config');
+  const multi = resolveAlignModelOverride('multi');
+  assert(multi === MULTILINGUAL_ALIGN_MODEL, 'multi preset is the production config untouched');
+  const swapped = resolveAlignModelOverride('en', 'https://x/y.onnx', 'cache-x');
+  assert(swapped.url === 'https://x/y.onnx' && swapped.cacheName === 'cache-x', 'URL/cache swapped');
+  assert(swapped.letters === ENGLISH_ALIGN_MODEL.letters, 'vocab preserved on swap');
 });
 
 // --- model-driven tokenization ---

@@ -30,17 +30,17 @@ import {
   stitchChunks,
   distributeSyllableTimes,
 } from './alignment/ctc';
-import { AlignModelConfig, ENGLISH_ALIGN_MODEL, pickAlignModel } from './alignment/models';
+import { AlignModelConfig, pickAlignModel } from './alignment/models';
 
 /**
- * Model override (used by the eval harness to compare checkpoints). Applies to
- * the English slot only — the eval checkpoints share its vocab.
+ * Full model override (eval harness): replaces the production model choice
+ * (e.g. force the English config on any lyrics, or a same-vocab checkpoint).
  */
-let modelOverride: { url: string; cacheName: string } | null = null;
+let modelOverride: AlignModelConfig | null = null;
 
-/** Swap the alignment model (eval/benchmarking only). */
-export function setAlignmentModelOverride(url: string, cacheName: string): void {
-  modelOverride = { url, cacheName };
+/** Replace the model choice entirely, bypassing pickAlignModel (eval only). */
+export function setAlignmentModel(model: AlignModelConfig | null): void {
+  modelOverride = model;
 }
 
 /** wav2vec2-base works at 16 kHz; its conv stack emits one frame per 320
@@ -84,7 +84,8 @@ export async function autoAlignTimings(
   const flat = flattenSyllablesForAlignment(lines);
   if (flat.length === 0) throw new Error('В дорожке нет слогов.');
   // The model follows the lyrics' script: Cyrillic/umlauts → multilingual MMS.
-  const model = pickAlignModel(flat.map((s) => s.text).join(' '));
+  // (The eval harness may replace the choice entirely.)
+  const model = modelOverride ?? pickAlignModel(flat.map((s) => s.text).join(' '));
   const words = buildWords(flat, model);
   const { tokens, tokenWord } = buildTranscript(words, model.wordSepId);
   if (tokens.length === 0) throw new Error('В тексте нет букв для выравнивания.');
@@ -199,16 +200,14 @@ function logSoftmaxInPlace(x: Float32Array, T: number, V: number): void {
 
 /**
  * Cache-first model download (single file). Mirrors separation.ts but for a
- * self-contained .onnx without external data. The eval-harness override (when
- * set) replaces the English checkpoint's URL/cache.
+ * self-contained .onnx without external data.
  */
 async function loadModel(
   model: AlignModelConfig,
   onDownload?: (loaded: number, total: number) => void,
 ): Promise<Uint8Array> {
-  const useOverride = modelOverride && model.id === ENGLISH_ALIGN_MODEL.id;
-  const url = useOverride ? modelOverride!.url : model.url;
-  const cacheName = useOverride ? modelOverride!.cacheName : model.cacheName;
+  const url = model.url;
+  const cacheName = model.cacheName;
   const cache = await caches.open(cacheName);
   const cached = await cache.match(url);
   if (cached) {

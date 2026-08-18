@@ -41,19 +41,30 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * self-contained ONNX (wav2vec2 CTC, 32-token English vocab compatible).
  * Add future models (e.g. a Russian xlsr CTC export) here.
  */
+// Every entry carries a PRESET ('en' = English vocab config, 'multi' = the
+// production MMS config) — the runner forces it through the full-model
+// override hook, since production always picks MMS regardless of the script.
 const MODEL_REGISTRY = {
-  // App default: large (p90 247 ms on kiri vs 8.3 s for base).
   'en-large-fp16': {
     url: 'https://huggingface.co/Project42/wav2vec2-large-lv60-align/resolve/main/model_fp16.onnx',
     cacheName: 'wav2vec2-align-large-v1',
+    preset: 'en',
   },
   'en-base-fp16': {
     url: 'https://huggingface.co/Xenova/wav2vec2-base-960h/resolve/main/onnx/model_fp16.onnx',
     cacheName: 'wav2vec2-align-v1',
+    preset: 'en',
   },
   'en-base-q8': {
     url: 'https://huggingface.co/Xenova/wav2vec2-base-960h/resolve/main/onnx/model_quantized.onnx',
     cacheName: 'wav2vec2-align-v1-q8',
+    preset: 'en',
+  },
+  // The production MULTILINGUAL checkpoint (own vocab + romanization).
+  'mms-fp16': {
+    url: 'https://huggingface.co/Project42/mms-300m-align/resolve/main/model_fp16.onnx',
+    cacheName: 'mms-align-300m-v1',
+    preset: 'multi',
   },
 };
 
@@ -62,7 +73,7 @@ const getArg = (name) => {
   const i = args.indexOf('--' + name);
   return i >= 0 ? args[i + 1] : undefined;
 };
-const modelId = getArg('model') ?? 'en-large-fp16';
+const modelId = getArg('model') ?? 'mms-fp16'; // production default since the single-model merge
 const songSlug = getArg('song') ?? 'kiri';
 const strategy = getArg('strategy') ?? 'proportional';
 
@@ -119,10 +130,10 @@ try {
   page.on('pageerror', (e) => console.error('PAGEERROR:', e.message));
   await page.goto('http://localhost:5173/', { waitUntil: 'domcontentloaded' });
 
-  if (modelId !== 'en-large-fp16') {
+  {
     const m = MODEL_REGISTRY[modelId];
     if (!m) throw new Error(`Unknown model "${modelId}". Known: ${Object.keys(MODEL_REGISTRY).join(', ')}`);
-    await page.evaluate(([url, cache]) => window.__setAlignModel(url, cache), [m.url, m.cacheName]);
+    await page.evaluate(([preset, url, cache]) => window.__setAlignModelFull(preset, url, cache), [m.preset, m.url, m.cacheName]);
   }
 
   // 1. Load the audio. Plain mode: straight into the vocal role (back for the

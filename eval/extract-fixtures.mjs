@@ -65,6 +65,7 @@ function parseKfnEntries(data) {
 const SONGS = [
   { kfn: 'Monoral - Kiri (Ergo Proxy).kfn', slug: 'kiri' },
   { kfn: 'Klahr & KEV - Dreaming wild.kfn', slug: 'dreaming-wild' },
+  { kfn: 'with backing vocal audio.kfn', slug: 'soul' },
 ];
 
 for (const song of SONGS) {
@@ -90,7 +91,7 @@ for (const song of SONGS) {
 
   // Vocal stem: the [MP3Music] Track0 entry ("backing vocals"), when present.
   const entries = parseKfnEntries(bytes);
-  const vocal = entries.find((e) => e.name.includes('Backing Vocals'));
+  const vocal = entries.find((e) => e.name.toLowerCase().includes('backing vocals'));
   if (vocal) {
     writeFileSync(join(outDir, 'vocal.mp3'), bytes.slice(vocal.absOffset, vocal.absOffset + vocal.inLen));
   }

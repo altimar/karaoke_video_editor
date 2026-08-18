@@ -12,7 +12,8 @@ import { createTimeline } from './ui/timeline';
 import { createPropsSheet } from './ui/propsSheet';
 import { canExport } from './lib/export';
 import { peekBgFilmstrip } from './lib/bgThumbnails';
-import { setAlignmentModelOverride } from './lib/forcedAlign';
+import { setAlignmentModel } from './lib/forcedAlign';
+import { resolveAlignModelOverride } from './lib/alignment/models';
 import { store } from './state/store';
 import { audioEngine } from './lib/audioEngine';
 import { getAudioTracks } from './types';
@@ -139,12 +140,13 @@ function main(): void {
     __store: typeof store;
     __audioEngine: typeof audioEngine;
     __bgFilmstrip: typeof peekBgFilmstrip;
-    __setAlignModel: typeof setAlignmentModelOverride;
+    __setAlignModelFull: (preset: 'en' | 'multi' | null, url?: string, cacheName?: string) => void;
   };
   hooks.__store = store;
   hooks.__audioEngine = audioEngine;
   hooks.__bgFilmstrip = peekBgFilmstrip;
-  hooks.__setAlignModel = setAlignmentModelOverride;
+  hooks.__setAlignModelFull = (preset, url, cacheName) =>
+    setAlignmentModel(preset ? resolveAlignModelOverride(preset, url, cacheName) : null);
 }
 
 function helpCard(): HTMLElement {
