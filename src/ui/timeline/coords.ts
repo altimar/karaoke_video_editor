@@ -28,8 +28,6 @@ export const RULER_H = 26;
 export const TOP_PAD = 10;
 /** px vertical gap between track rows. */
 export const TRACK_PAD = 6;
-/** horizontal hit-zone half-width around a text marker for dragging. */
-export const HIT_W = 8;
 
 /** Row height for a track: the ACTIVE audio track is tall (waveform editing),
  *  inactive ones collapse to one line; the ACTIVE text track shows three

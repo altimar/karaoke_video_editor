@@ -67,7 +67,17 @@ export interface TimelineEnv {
 
 /** A drag a track view claimed via hitTest — carried across pointermove. */
 export type TrackDrag =
-  | { kind: 'syllable'; trackIndex: number; lineIndex: number; sylIndex: number; moved: boolean }
+  | {
+      kind: 'syllable';
+      trackIndex: number;
+      lineIndex: number;
+      sylIndex: number;
+      /** Where INSIDE the marker the grab happened (xToMs(x) − startMs at
+       *  pointerdown): the drag keeps this offset so the marker doesn't jump
+       *  its line to the cursor when grabbed by the label letters. */
+      grabMs: number;
+      moved: boolean;
+    }
   | { kind: 'volume'; trackIndex: number; timeMs: number; moved: boolean }
   | {
       /** A detected sound chunk of an audio track, dragged to another role. */

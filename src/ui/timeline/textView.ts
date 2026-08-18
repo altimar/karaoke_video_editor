@@ -9,8 +9,33 @@
 import { store } from '../../state/store';
 import { flatSyllables } from '../../lib/textParser';
 import { TextTrack } from '../../types';
-import { ROW_H, TEXT_ROW_H_ACTIVE, HIT_W } from './coords';
+import { ROW_H, TEXT_ROW_H_ACTIVE } from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
+
+/** Gap between the marker line and its label (px). */
+const LABEL_DX = 5;
+/** Hit/selection padding around the label text (px). */
+const LABEL_PAD = 4;
+
+/** Shared measuring context for label widths (hit zones follow the text). */
+const measureCtx =
+  typeof document !== 'undefined' ? document.createElement('canvas').getContext('2d') : null;
+
+/** The clickable zone of a marker at `mx` with label `label`: from the line
+ *  through the end of the label text + padding. A label-less syllable gets a
+ *  minimal strip around the line itself. */
+function markerZone(mx: number, label: string): { x0: number; x1: number } {
+  let w = 0;
+  if (label) {
+    if (measureCtx) {
+      measureCtx.font = '11px system-ui';
+      w = measureCtx.measureText(label).width;
+    } else {
+      w = label.length * 6;
+    }
+  }
+  return { x0: mx - 1, x1: w > 0 ? mx + LABEL_DX + w + LABEL_PAD : mx + 5 };
+}
 
 /**
  * Lane of the n-th TIMED syllable: 1st → lane 0, 2nd → lane 1, 3rd → lane 2,
@@ -48,19 +73,21 @@ export const textView: TrackView<TextTrack> = {
         env.selection.lineIndex === lineIndex &&
         env.selection.sylIndex === sylIndex;
 
-      // Selection highlight: a soft band across the marker's lane + bolder
-      // marker/label, so the Del target is unmistakable.
+      const label = syl.text.trim().slice(0, 10);
+
+      // Selection highlight: the label's own zone (line → text end + padding),
+      // so what lights up is exactly what Del will remove.
       if (sel) {
+        const zone = markerZone(mx, label);
         ctx.fillStyle = 'rgba(255,225,77,0.16)';
-        ctx.fillRect(mx - 12, laneY, 24, ROW_H);
+        ctx.fillRect(zone.x0, laneY, zone.x1 - zone.x0, ROW_H);
       }
 
       // syllable text label
       ctx.fillStyle = sel ? '#ffe14d' : '#7a7f9e';
       ctx.font = (sel ? 'bold ' : '') + '11px system-ui';
       ctx.textBaseline = 'middle';
-      const label = syl.text.trim();
-      if (label) ctx.fillText(label.slice(0, 10), mx + 5, laneY + ROW_H / 2);
+      if (label) ctx.fillText(label, mx + LABEL_DX, laneY + ROW_H / 2);
 
       // marker handle — thin 1px line spanning its lane
       ctx.fillStyle = '#ffe14d';
@@ -99,7 +126,9 @@ export const textView: TrackView<TextTrack> = {
       (f) => f.lineIndex === drag.lineIndex && f.sylIndex === drag.sylIndex,
     );
     if (myFlatIdx < 0) return;
-    let ms = env.xToMs(x);
+    // The marker moves WITH the pointer: where the user grabbed inside the
+    // label stays under the finger, the line doesn't snap to the cursor.
+    let ms = env.xToMs(x) - drag.grabMs;
     // Clamp: can't drag past the previous or next timed syllable WITHIN THE SAME TRACK.
     let minMs = 0;
     let maxMs = env.durationMs();
@@ -157,8 +186,20 @@ export function pickMarker(
     const laneY = rowY + lane * ROW_H;
     if (y < laneY || y > laneY + ROW_H) continue;
     const mx = env.msToX(syl.startMs);
-    if (x >= mx - HIT_W && x <= mx + HIT_W) {
-      return { kind: 'syllable', trackIndex, lineIndex, sylIndex, moved: false };
+    // The hit zone is the LABEL (line → text end + padding), not a fixed
+    // ±px around the line — users aim at the letters.
+    const zone = markerZone(mx, syl.text.trim().slice(0, 10));
+    if (x >= zone.x0 && x <= zone.x1) {
+      return {
+        kind: 'syllable',
+        trackIndex,
+        lineIndex,
+        sylIndex,
+        // Keep the grab point inside the marker so the line doesn't jump to
+        // the cursor when the label (not the line) was grabbed.
+        grabMs: env.xToMs(x) - syl.startMs,
+        moved: false,
+      };
     }
   }
   return null;

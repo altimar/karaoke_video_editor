@@ -39,10 +39,19 @@ test('click a marker + Del deletes that syllable without shifting the others', a
   // the 2nd timed syllable lives in lane 1 of the active 3-lane row.
   const rowTop = textHead!.y + 6;
   const lane1Y = rowTop + 18 + 9;
-  const x900 = canvas!.x + (900 / (SECONDS * 1000)) * canvas!.width;
+  const lane0Y = rowTop + 9;
+  const xAt = (ms: number) => canvas!.x + (ms / (SECONDS * 1000)) * canvas!.width;
 
-  // Click the second marker (selection), delete it.
-  await page.mouse.click(x900, lane1Y);
+  // Clicking LEFT of the marker line (old fixed ±8px zone) must NOT grab the
+  // syllable — it falls through to a seek.
+  await page.mouse.click(xAt(900) - 10, lane1Y);
+  let t = await page.evaluate(() => (window as unknown as { __audioEngine: any }).__audioEngine.currentTimeMs);
+  expect(t).toBeGreaterThan(500);
+  await page.keyboard.press('Delete');
+  expect(await flatSyllablesOf(page)).toHaveLength(2); // nothing was selected
+
+  // Click the second marker's LABEL (letters, right of the line), delete it.
+  await page.mouse.click(xAt(900) + 10, lane1Y);
   await page.keyboard.press('Delete');
   await expect
     .poll(async () => (await flatSyllablesOf(page)).length, { timeout: 5_000 })
@@ -52,10 +61,24 @@ test('click a marker + Del deletes that syllable without shifting the others', a
   expect(after[0].startMs).toBe(500); // the FIRST syllable kept its exact timing
 
   // Esc deselects: a following Delete must do nothing.
-  const x500 = canvas!.x + (500 / (SECONDS * 1000)) * canvas!.width;
-  const lane0Y = rowTop + 9;
-  await page.mouse.click(x500, lane0Y);
+  await page.mouse.click(xAt(500) + 10, lane0Y);
   await page.keyboard.press('Escape');
   await page.keyboard.press('Delete');
   expect(await flatSyllablesOf(page)).toHaveLength(1); // still there
+
+  // Dragging keeps the grab point: grab the LABEL (+14px) and move +200px —
+  // the marker shifts by exactly the pointer delta, it does not snap its line
+  // to the cursor (which would land grabPx further right).
+  const syl = await flatSyllablesOf(page);
+  expect(syl[0].startMs).toBe(500);
+  const grabPx = 14;
+  const deltaPx = 200;
+  await page.mouse.move(xAt(500) + grabPx, lane0Y);
+  await page.mouse.down();
+  await page.mouse.move(xAt(500) + grabPx + deltaPx, lane0Y, { steps: 8 });
+  await page.mouse.up();
+  const msPerPx = (SECONDS * 1000) / canvas!.width;
+  const dragged = (await flatSyllablesOf(page))[0];
+  expect(Math.abs(dragged.startMs - (500 + deltaPx * msPerPx))).toBeLessThan(120);
+  expect(dragged.startMs).toBeLessThan(500 + (deltaPx + grabPx / 2) * msPerPx); // no cursor-snap
 });
