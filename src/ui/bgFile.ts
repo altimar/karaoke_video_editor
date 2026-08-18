@@ -12,7 +12,7 @@ export async function applyBgFile(f: File, toast: ToastFn): Promise<void> {
   const isVideo = f.type.startsWith('video/') || /\.mp4$/i.test(f.name);
   if (isVideo) {
     const bytes = new Uint8Array(await f.arrayBuffer());
-    loadBgVideo(bytes);
+    await loadBgVideo(bytes);
     store.mutate((p) => {
       p.background.bgType = 'video';
       p.background.bgVideoFileName = f.name;
