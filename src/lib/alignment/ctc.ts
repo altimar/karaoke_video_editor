@@ -12,21 +12,14 @@
  * Everything here is pure so it is unit-testable with synthetic logits.
  */
 import { Line } from '../../types';
+import { AlignModelConfig, ENGLISH_ALIGN_MODEL } from './models';
+import { romanizeWord } from './romanize';
 
-/**
- * Vocabulary of facebook/wav2vec2-base-960h (verified against the model's
- * vocab.json): `<pad>` is the CTC blank, `|` is the word separator.
- * Specials <s>=1, </s>=2, <unk>=3 are never produced by this checkpoint.
- */
-export const BLANK_ID = 0;
-export const WORDSEP_ID = 4;
-export const VOCAB_SIZE = 32;
-
-const LETTER_IDS: Record<string, number> = {
-  A: 7, B: 24, C: 19, D: 14, E: 5, F: 20, G: 21, H: 11, I: 10, J: 29,
-  K: 26, L: 15, M: 17, N: 9, O: 8, P: 23, Q: 30, R: 13, S: 12, T: 6,
-  U: 16, V: 25, W: 18, X: 28, Y: 22, Z: 31, "'": 27,
-};
+// Historical constants (the default English checkpoint's vocab) — re-exported
+// for tests/eval. Model-specific values live in the registry (./models.ts).
+export const BLANK_ID = ENGLISH_ALIGN_MODEL.blankId;
+export const WORDSEP_ID = ENGLISH_ALIGN_MODEL.wordSepId as number;
+export const VOCAB_SIZE = ENGLISH_ALIGN_MODEL.vocabSize;
 
 /** One flattened syllable with its global position (line- and syllable-index). */
 export interface FlatSyllable {
@@ -59,39 +52,59 @@ export interface AlignWord {
   tokenIds: number[];
 }
 
-/** Split flat syllables into words and tokenize each word to CTC token ids. */
-export function buildWords(flat: FlatSyllable[]): AlignWord[] {
+/**
+ * Split flat syllables into words and tokenize each word to CTC token ids.
+ * Tokenization is model-driven: case normalization + optional uroman-style
+ * romanization + the model's letter vocab. Romanization is word-scoped (its
+ * rules are), so a word's syllables are concatenated and tokenized as a unit.
+ */
+export function buildWords(flat: FlatSyllable[], model: AlignModelConfig = ENGLISH_ALIGN_MODEL): AlignWord[] {
   const words: AlignWord[] = [];
   let cur: AlignWord | null = null;
+  let curText = '';
   let prevLine = -1;
+  const flush = (): void => {
+    if (!cur) return;
+    const src = model.romanize ? romanizeWord(curText) : curText;
+    const cased = model.caseMode === 'upper' ? src.toUpperCase() : src.toLowerCase();
+    for (const ch of cased) {
+      const id = model.letters[ch];
+      if (id !== undefined) cur.tokenIds.push(id);
+    }
+    curText = '';
+  };
   flat.forEach((syl, i) => {
     if (!cur || syl.sep === ' ' || syl.lineIndex !== prevLine) {
+      flush();
       cur = { syllables: [], tokenIds: [] };
       words.push(cur);
     }
     prevLine = syl.lineIndex;
     cur.syllables.push(i);
-    for (const ch of syl.text.toUpperCase()) {
-      const id = LETTER_IDS[ch];
-      if (id !== undefined) cur.tokenIds.push(id);
-    }
+    curText += syl.text;
   });
+  flush();
   return words;
 }
 
 /**
- * The full CTC transcript: words joined by the `|` separator. Words with no
- * letters (pure punctuation) are skipped — they carry no sound. `tokenWord`
- * maps every token to its word index (-1 for the separators).
+ * The full CTC transcript: words joined by the separator when the model has
+ * one (the 960h `|`; MMS has none — words then simply follow each other, the
+ * monotonic Viterbi keeps them ordered). Words with no letters (pure
+ * punctuation) are skipped — they carry no sound. `tokenWord` maps every
+ * token to its word index (-1 for the separators).
  */
-export function buildTranscript(words: AlignWord[]): { tokens: number[]; tokenWord: number[] } {
+export function buildTranscript(
+  words: AlignWord[],
+  wordSepId: number | null = ENGLISH_ALIGN_MODEL.wordSepId,
+): { tokens: number[]; tokenWord: number[] } {
   const tokens: number[] = [];
   const tokenWord: number[] = [];
   let first = true;
   words.forEach((w, wi) => {
     if (w.tokenIds.length === 0) return;
-    if (!first) {
-      tokens.push(WORDSEP_ID);
+    if (!first && wordSepId !== null) {
+      tokens.push(wordSepId);
       tokenWord.push(-1);
     }
     first = false;
@@ -112,6 +125,7 @@ export function buildTranscript(words: AlignWord[]): { tokens: number[]; tokenWo
  *
  * @param logProbs Float32Array of shape [T, V] — per-frame log-softmax.
  * @param tokens   transcript token ids (values < V).
+ * @param blankId  the CTC blank token id of the model (0 for both checkpoints).
  * @returns the frame index per transcript token (-1 if never emitted) + score.
  */
 export function ctcForcedAlign(
@@ -119,6 +133,7 @@ export function ctcForcedAlign(
   T: number,
   V: number,
   tokens: number[],
+  blankId: number = BLANK_ID,
 ): { frames: Int32Array; score: number } {
   const L = tokens.length;
   const S = 2 * L + 1;
@@ -128,7 +143,7 @@ export function ctcForcedAlign(
   const next = new Float64Array(S).fill(NEG_INF);
   const backptr = new Int32Array(T * S);
 
-  scores[0] = logProbs[BLANK_ID];
+  scores[0] = logProbs[blankId];
   if (S > 1) scores[1] = logProbs[tokens[0]];
 
   for (let t = 1; t < T; t++) {
@@ -153,7 +168,7 @@ export function ctcForcedAlign(
           bestSrc = s - 2;
         }
       }
-      const emit = s % 2 === 0 ? logProbs[base + BLANK_ID] : logProbs[base + tokens[(s - 1) / 2]];
+      const emit = s % 2 === 0 ? logProbs[base + blankId] : logProbs[base + tokens[(s - 1) / 2]];
       next[s] = best + emit;
       backptr[t * S + s] = bestSrc;
     }
@@ -188,10 +203,14 @@ export function stitchChunks(
   return out;
 }
 
-/** Letter weight of a syllable (punctuation ignored) for proportional splits. */
-function letterWeight(text: string): number {
+/** Letter weight of a syllable (punctuation ignored) for proportional splits.
+ *  Counts the letters the MODEL sees (romanized for multilingual checkpoints,
+ *  so «щ» weighs 4 — shch — not 1). */
+function letterWeight(text: string, model: AlignModelConfig): number {
+  const src = model.romanize ? romanizeWord(text) : text;
+  const cased = model.caseMode === 'upper' ? src.toUpperCase() : src.toLowerCase();
   let n = 0;
-  for (const ch of text.toUpperCase()) if (LETTER_IDS[ch] !== undefined) n++;
+  for (const ch of cased) if (model.letters[ch] !== undefined) n++;
   return Math.max(1, n);
 }
 
@@ -215,6 +234,7 @@ export function distributeSyllableTimes(
   frameMs: number,
   durationMs: number,
   strategy: 'proportional' | 'chars' = 'proportional',
+  model: AlignModelConfig = ENGLISH_ALIGN_MODEL,
 ): number[] {
   const nSyl = flat.length;
   const starts = new Array<number>(nSyl).fill(-1);
@@ -259,7 +279,7 @@ export function distributeSyllableTimes(
     if (strategy === 'chars' && hasTokens) {
       let consumed = 0;
       for (const sylIdx of w.syllables) {
-        const need = letterWeight(flat[sylIdx].text);
+        const need = letterWeight(flat[sylIdx].text, model);
         let first = -1;
         for (let k = 0; k < need && consumed < w.tokenIds.length; k++, consumed++) {
           const f = frames[wordTokenStart[wi] + consumed];
@@ -270,7 +290,7 @@ export function distributeSyllableTimes(
       return;
     }
     // proportional
-    const weights = w.syllables.map((idx) => letterWeight(flat[idx].text));
+    const weights = w.syllables.map((idx) => letterWeight(flat[idx].text, model));
     const total = weights.reduce((s, x) => s + x, 0) || 1;
     let acc = 0;
     w.syllables.forEach((sylIdx, k) => {

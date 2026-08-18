@@ -12,14 +12,17 @@
  * attention memory cannot hold a whole song at once), log-softmax stitching
  * and the final syllable distribution.
  *
- * Model: Xenova/wav2vec2-base-960h (ONNX, int8-quantized, ~48 MB). English
- * only for now — the interface is model-agnostic so other checkpoints
- * (e.g. xlsr-53-russian) can slot in later.
+ * Two checkpoints (registry in alignment/models.ts), picked automatically by
+ * the lyrics' script (alignment/models.ts: pickAlignModel):
+ *  - English (wav2vec2-large-960h-lv60-self, fp16 ~630 MB) for pure-ASCII
+ *    Latin lyrics;
+ *  - multilingual MMS-300M aligner (1130 languages, fp16 ~600 MB) for
+ *    anything else — Cyrillic, umlauts — via uroman romanization
+ *    (alignment/romanize.ts). Weight license: CC-BY-NC-4.0.
  */
 import { Line } from '../types';
 import { loadOrt } from './separation';
 import {
-  VOCAB_SIZE,
   flattenSyllablesForAlignment,
   buildWords,
   buildTranscript,
@@ -27,20 +30,12 @@ import {
   stitchChunks,
   distributeSyllableTimes,
 } from './alignment/ctc';
+import { AlignModelConfig, ENGLISH_ALIGN_MODEL, pickAlignModel } from './alignment/models';
 
 /**
- * wav2vec2-large-960h-lv60-self (fp16, ~630 MB), exported by
- * eval/export-large-align.py + fp16-converted (see the script). Same 32-token
- * vocab as base but ~3.3× the parameters — empirically this is the difference
- * between confusing repeated choruses (base: ±10 s drift runs, p90 8.3 s) and
- * not confusing them (large: p90 247 ms, worst word 0.6 s; kiri benchmark in
- * eval/results/). WebGPU-native fp16.
+ * Model override (used by the eval harness to compare checkpoints). Applies to
+ * the English slot only — the eval checkpoints share its vocab.
  */
-const MODEL_URL =
-  'https://huggingface.co/Project42/wav2vec2-large-lv60-align/resolve/main/model_fp16.onnx';
-const MODEL_CACHE = 'wav2vec2-align-large-v1';
-
-/** Model override (used by the eval harness to compare checkpoints). */
 let modelOverride: { url: string; cacheName: string } | null = null;
 
 /** Swap the alignment model (eval/benchmarking only). */
@@ -88,15 +83,17 @@ export async function autoAlignTimings(
 ): Promise<number[]> {
   const flat = flattenSyllablesForAlignment(lines);
   if (flat.length === 0) throw new Error('В дорожке нет слогов.');
-  const words = buildWords(flat);
-  const { tokens, tokenWord } = buildTranscript(words);
+  // The model follows the lyrics' script: Cyrillic/umlauts → multilingual MMS.
+  const model = pickAlignModel(flat.map((s) => s.text).join(' '));
+  const words = buildWords(flat, model);
+  const { tokens, tokenWord } = buildTranscript(words, model.wordSepId);
   if (tokens.length === 0) throw new Error('В тексте нет букв для выравнивания.');
 
   cb.onStatus?.('Подготовка аудио…');
   const pcm = await to16kMono(buffer);
 
-  cb.onStatus?.('Загрузка модели распознавания…');
-  const modelBytes = await loadModel(cb.onDownload);
+  cb.onStatus?.(`Загрузка модели распознавания (${model.label})…`);
+  const modelBytes = await loadModel(model, cb.onDownload);
 
   const ort = await loadOrt();
   cb.onStatus?.('Запуск модели…');
@@ -108,6 +105,7 @@ export async function autoAlignTimings(
   const outputName = session.outputNames[0];
 
   // --- Chunked inference with overlap ---
+  const V = model.vocabSize;
   const chunkLen = CHUNK_SEC * SR;
   const overlapLen = OVERLAP_SEC * SR;
   const step = chunkLen - overlapLen;
@@ -127,7 +125,7 @@ export async function autoAlignTimings(
     const out = await session.run(feed);
     const logits = (out[outputName].data as Float32Array).slice(); // copy
     // frames in this chunk; keep all but the trailing overlap (last chunk keeps all)
-    const frames = logits.length / VOCAB_SIZE;
+    const frames = logits.length / V;
     const overlapFrames = Math.round((overlapLen / SR) / (1 / 50)); // 50 fps
     const isLast = end >= pcm.length;
     chunks.push({ logits, frames, keep: isLast ? frames : Math.max(1, frames - overlapFrames) });
@@ -137,13 +135,13 @@ export async function autoAlignTimings(
   }
 
   cb.onStatus?.('Выравнивание текста…');
-  const merged = stitchChunks(chunks, VOCAB_SIZE);
-  const T = merged.length / VOCAB_SIZE;
-  logSoftmaxInPlace(merged, T, VOCAB_SIZE);
-  const { frames } = ctcForcedAlign(merged, T, VOCAB_SIZE, Array.from(tokens));
+  const merged = stitchChunks(chunks, V);
+  const T = merged.length / V;
+  logSoftmaxInPlace(merged, T, V);
+  const { frames } = ctcForcedAlign(merged, T, V, Array.from(tokens), model.blankId);
 
   const durationMs = Math.round(buffer.duration * 1000);
-  const starts = distributeSyllableTimes(words, tokenWord, frames, flat, FRAME_MS, durationMs);
+  const starts = distributeSyllableTimes(words, tokenWord, frames, flat, FRAME_MS, durationMs, 'proportional', model);
   // Shift by the receptive-field center so times point at the sound, not the
   // left edge of the model's window.
   return starts.map((ms) => Math.max(0, Math.round(ms + FRAME_OFFSET_MS)));
@@ -201,11 +199,17 @@ function logSoftmaxInPlace(x: Float32Array, T: number, V: number): void {
 
 /**
  * Cache-first model download (single file). Mirrors separation.ts but for a
- * self-contained .onnx without external data.
+ * self-contained .onnx without external data. The eval-harness override (when
+ * set) replaces the English checkpoint's URL/cache.
  */
-async function loadModel(onDownload?: (loaded: number, total: number) => void): Promise<Uint8Array> {
-  const url = modelOverride?.url ?? MODEL_URL;
-  const cache = await caches.open(modelOverride?.cacheName ?? MODEL_CACHE);
+async function loadModel(
+  model: AlignModelConfig,
+  onDownload?: (loaded: number, total: number) => void,
+): Promise<Uint8Array> {
+  const useOverride = modelOverride && model.id === ENGLISH_ALIGN_MODEL.id;
+  const url = useOverride ? modelOverride!.url : model.url;
+  const cacheName = useOverride ? modelOverride!.cacheName : model.cacheName;
+  const cache = await caches.open(cacheName);
   const cached = await cache.match(url);
   if (cached) {
     onDownload?.(1, 1);
