@@ -95,7 +95,7 @@ src/
     controls.ts            — верхняя панель: загрузка MP3, play/pause, запись, экспорт
     lyricsEditor.ts        — редактор текста активной дорожки + переключатель дорожек (add/remove)
     preview.ts             — canvas-превью с RAF-циклом (+ синхронизация видео-фона с аудио)
-    timeline/              — таймлайн (модульный): оркестратор (index) + стратегии дорожек (textView, audioView)
+    timeline/              — таймлайн (модульный): оркестратор (index), painter (рендер canvas), gutter (шапки), actions (файловые потоки/сепарация/выравнивание) + стратегии дорожек (textView, audioView)
     stylePanel.ts          — панель: per-track (шрифт/цвета/обводка/раскладка) + project (фон/FPS/разрешение)
     exportDialog.ts        — модальный диалог экспорта (выбор качества, прогресс)
 tests/                     — юнит-тесты (Vitest: fake-ctx рендер, round-trip'ы, jsdom)

@@ -76,3 +76,13 @@ export function encodeWav(left: Float32Array, right: Float32Array, sampleRate: n
   }
   return w.bytes;
 }
+
+/**
+ * Encode any channel layout through the (stereo) encoder: mono is duplicated
+ * to both channels, layouts beyond stereo keep their first two channels.
+ */
+export function encodeWavChannels(channels: Float32Array[], sampleRate: number): Uint8Array {
+  const left = channels[0] ?? new Float32Array(0);
+  const right = channels.length > 1 ? channels[1] : left;
+  return encodeWav(left, right, sampleRate);
+}

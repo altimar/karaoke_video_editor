@@ -4,11 +4,14 @@
 
 Таймлайн разбит на модули в `src/ui/timeline/` по принципу «стратегия»: каждый тип дорожки — отдельный модуль с единым интерфейсом `TrackView`, оркестратор диспетчеризует по `track.type`. Добавление нового типа дорожки = модуль + запись в реестре, оркестратор не трогается.
 
-- **`index.ts`** — оркестратор: canvas/DOM lifecycle, ruler, playhead, gutter (шапки), zoom, единый dispatch pointer-событий. Не содержит логики конкретных дорожек.
+- **`index.ts`** — оркестратор: canvas/DOM lifecycle, zoom, единый dispatch pointer-событий, переключатель инструментов, клавиатура (выделение слога + Del). Не содержит логики конкретных дорожек.
 - **`coords.ts`** — константы (`ROW_H`, `AUDIO_ROW_H`, `RULER_H`, `TRACK_PAD`) + чистые функции раскладки (`rowHeight`, `tracksTop`, `trackTopForIndex`, `trackIndexAtY`).
-- **`types.ts`** — контракты: `TimelineEnv` (msToX/xToMs/длительность/ширина/peaks), `TrackDrag`, интерфейс `TrackView`.
-- **`textView.ts`** — реализация `TrackView` для текстовых дорожек (маркеры слогов + drag).
-- **`audioView.ts`** — реализация для аудиодорожек (waveform + огибающая громкости + drag/двойной клик точек).
+- **`types.ts`** — контракты: `TimelineEnv` (msToX/xToMs/длительность/ширина/peaks + tool/pointer/dropTarget/drag/selection), `TrackDrag`, интерфейс `TrackView`.
+- **`textView.ts`** — реализация `TrackView` для текстовых дорожек (маркеры слогов + drag с сохранением точки захвата).
+- **`audioView.ts`** — реализация для аудиодорожек (waveform + огибающая громкости / фразы-куски в режиме редактирования).
+- **`painter.ts`** — весь рендер canvas: линейка, строки (через вьюхи), строка «Фон» (фильмстрип), плейхед, таблетка записи; rAF-троттлинг перерисовки. Получает состояние оркестратора через геттеры (`PainterDeps`).
+- **`gutter.ts`** — левая колонка шапок-карточек (HTML): активация, M/S, ✨/⏱, удаление; перестройка по сигнатуре.
+- **`actions.ts`** — app-уровень: скрытые файловые инпуты (аудио в роль, фон), раннеры сепарации (✨) и авторасстановки (⏱).
 
 `TrackView` (интерфейс стратегии): `rowHeight`, `draw(ctx, track, rowY, env)`, `hitTest(track, rowY, x, y, env)` → `TrackDrag | null`, `onDrag(drag, rowY, x, y, env)`, опционально `onBackgroundClick` (клик мимо объектов) и `onDoubleTap` (двойной клик). Оркестратор перебирает строки, спрашивает view о попадании; первый перехват владеет drag'ом.
 

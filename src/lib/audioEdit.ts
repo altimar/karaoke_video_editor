@@ -23,7 +23,7 @@
  */
 import { audioEngine } from './audioEngine';
 import { loadAudioBytesIntoRole } from './audioLoader';
-import { encodeWav } from './wavEncoder';
+import { encodeWavChannels } from './wavEncoder';
 import { AudioRole, getAudioTrackByRole } from '../types';
 import { store } from '../state/store';
 
@@ -105,13 +105,6 @@ function mixdown(channels: Float32Array[]): Float32Array[] {
   return [out];
 }
 
-/** Encode channels as a stereo WAV (mono is duplicated to both channels). */
-function encodeRoleWav(channels: Float32Array[], sampleRate: number): Uint8Array {
-  const left = channels[0] ?? new Float32Array(0);
-  const right = channels.length > 1 ? channels[1] : left;
-  return encodeWav(left, right, sampleRate);
-}
-
 function channelsOf(buffer: AudioBuffer): Float32Array[] {
   const out: Float32Array[] = [];
   for (let c = 0; c < buffer.numberOfChannels; c++) out.push(buffer.getChannelData(c).slice());
@@ -152,8 +145,8 @@ export async function moveChunkToRole(
   // Swapping a voice's src resets its position — restore it (and playback).
   const wasPlaying = audioEngine.isPlaying;
   const pos = audioEngine.currentTimeMs;
-  await loadAudioBytesIntoRole(fromRole, encodeRoleWav(from, fromRate), fromName);
-  await loadAudioBytesIntoRole(toRole, encodeRoleWav(to, toRate), toName);
+  await loadAudioBytesIntoRole(fromRole, encodeWavChannels(from, fromRate), fromName);
+  await loadAudioBytesIntoRole(toRole, encodeWavChannels(to, toRate), toName);
   audioEngine.seek(Math.min(pos, audioEngine.durationMs));
   if (wasPlaying) void audioEngine.play();
   return true;
