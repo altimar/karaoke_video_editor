@@ -24,6 +24,7 @@ function style(over: Record<string, unknown> = {}) {
 function makeProject() {
   return {
     durationMs: 10000, fps: 30, width: 1920, height: 1080,
+    metadata: { artist: 'Lumen', title: 'Буря', album: 'Волны', composer: 'В. Соколов', year: '2024', comment: 'тест' },
     background: { bgType: 'color', bgColor: '#000', bgColors: ['#000', '#111'], bgImageDataUrl: null },
     tracks: [
       {
@@ -101,12 +102,16 @@ async function inspect(blob: Blob) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const dec = new TextDecoder();
   let pos = 4; // skip KFNB magic
-  // Header: iterate ID3-style blocks until ENDH.
+  // Header: iterate ID3-style blocks until ENDH, collecting TITL/ARTS strings.
+  const headerStr: Record<string, string> = {};
   while (pos + 9 <= buf.length) {
     const name = dec.decode(buf.slice(pos, pos + 4)); pos += 4;
     const dt = buf[pos]; pos += 1;
     const val = dv.getUint32(pos, true); pos += 4;
-    if (dt === 2) pos += val; // skip string payload
+    if (dt === 2) {
+      headerStr[name] = dec.decode(buf.slice(pos, pos + val));
+      pos += val; // skip string payload
+    }
     if (name === 'ENDH') break;
   }
   const fc = dv.getUint32(pos, true); pos += 4;
@@ -122,7 +127,7 @@ async function inspect(blob: Blob) {
   for (const e of raw) e.absOff = dirEnd + e.offset;
   const ini = raw.find((e) => e.type === 1);
   const songIni = ini ? dec.decode(buf.slice(ini.absOff, ini.absOff + ini.inLen)) : '';
-  return { entries: raw, songIni };
+  return { entries: raw, songIni, headerStr };
 }
 
 test('export: directory layout + Effect fields for two tracks', async () => {
@@ -133,7 +138,8 @@ test('export: directory layout + Effect fields for two tracks', async () => {
   assert(Array.isArray(warnings), 'export returns a warnings array');
   assert(warnings.length === 0, `no warnings for 2 tracks (got ${warnings.length})`);
 
-  const { entries, songIni } = await inspect(blob);
+  const insp = await inspect(blob);
+  const { entries, songIni } = insp;
   // minus (type 2) + back (type 2) + Song.ini (type 1).
   assert(entries.length === 3, `directory has 3 entries (got ${entries.length})`);
   assert(entries[0].type === 2, 'first entry is audio (type 2)');
@@ -142,6 +148,18 @@ test('export: directory layout + Effect fields for two tracks', async () => {
 
   // EffectCount reflects the number of tracks.
   assert(songIni.includes('EffectCount=2'), 'EffectCount=2 for two tracks');
+
+  // Metadata → [General] fields.
+  assert(songIni.includes('Title=Буря'), 'Title from metadata');
+  assert(songIni.includes('Artist=Lumen'), 'Artist from metadata');
+  assert(songIni.includes('Album=Волны'), 'Album from metadata');
+  assert(songIni.includes('Composer=В. Соколов'), 'Composer from metadata');
+  assert(songIni.includes('Year=2024'), 'Year from metadata');
+  assert(songIni.includes('Comment=тест'), 'Comment from metadata');
+
+  // Metadata → container header TITL/ARTS blocks.
+  assert(insp.headerStr.TITL === 'Буря', `header TITL from metadata (got "${insp.headerStr.TITL}")`);
+  assert(insp.headerStr.ARTS === 'Lumen', `header ARTS from metadata (got "${insp.headerStr.ARTS}")`);
 
   // Track 1 (scroller) → Eff1, ID=1, with a Trajectory field.
   assert(/\[Eff1\]/.test(songIni), '[Eff1] section present');
@@ -181,6 +199,15 @@ test('import round-trip: tracks, lyrics, filenames, settings', async () => {
   assert(imported.audioByRole.get('minus')!.length === fakeAudio.length, `minus bytes length matches (${imported.audioByRole.get('minus')!.length})`);
   // back bytes round-trip via [MP3Music] Track0.
   assert(imported.audioByRole.has('back'), 'back audio imported');
+
+  // Song metadata round-trips from [General].
+  const im = imported.project.metadata;
+  assert(im.artist === 'Lumen', `metadata artist round-trips (got "${im.artist}")`);
+  assert(im.title === 'Буря', `metadata title round-trips (got "${im.title}")`);
+  assert(im.album === 'Волны', `metadata album round-trips (got "${im.album}")`);
+  assert(im.composer === 'В. Соколов', `metadata composer round-trips (got "${im.composer}")`);
+  assert(im.year === '2024', `metadata year round-trips (got "${im.year}")`);
+  assert(im.comment === 'тест', `metadata comment round-trips (got "${im.comment}")`);
 
   const it = imported.project.tracks as any[];
   // 2 text tracks + 4 audio roles (original empty, lead empty, minus, back).
@@ -361,8 +388,8 @@ test('video background → ID=62 effect + type=5 entry with the full MP4 bytes',
   assert(/LoopVideo=0/.test(eff1), 'ID=62 LoopVideo=0 (no looping — trim/fallback is on our side)');
   assert(/EffectCount=3/.test(insp.songIni), `EffectCount includes the video effect (got ${/EffectCount=.+/.exec(insp.songIni)?.[0]})`);
 
-  // The mp4-KFN caveat is surfaced as a warning.
-  assert(r.warnings.some((w: string) => /MP4/.test(w)), 'warning about MP4 not being officially supported by KaraFun');
+  // MP4-in-KFN was verified to play fine in the KaraFun player — no warning.
+  assert(r.warnings.length === 0, `no warnings for the video background (got ${r.warnings.length})`);
 });
 
 test('video background WITHOUT bytes → no ID=62 effect, no type=5 entry', async () => {

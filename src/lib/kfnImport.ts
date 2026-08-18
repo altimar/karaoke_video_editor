@@ -15,11 +15,11 @@
  * Timings within one effect are a flat sequence (Sync0..SyncN chunks), but they
  * are LOCAL to that effect — each effect has its own independent Sync array.
  */
-import { Line, Syllable, TextStyle, TextTrack, Track, newTrackId, RendererSettings, Background, createBackground, AudioRole, AUDIO_ROLE_NAMES } from '../types';
+import { Line, Syllable, TextStyle, TextTrack, Track, newTrackId, RendererSettings, Background, createBackground, AudioRole, AUDIO_ROLE_NAMES, ProjectMetadata, createProjectMetadata } from '../types';
 import { trajectoryToPreviewSec } from './text_renderers/scroller';
 
 export interface KfnImportResult {
-  project: { tracks: Track[]; background: Background };
+  project: { tracks: Track[]; background: Background; metadata: ProjectMetadata };
   audioByRole: Map<AudioRole, Uint8Array>;
 }
 
@@ -33,8 +33,8 @@ interface KfnEntry {
   absOffset: number;
 }
 
-/** Parse the KFN binary into directory entries + Song.ini text. */
-function parseKfn(data: Uint8Array): { entries: KfnEntry[]; songIni: string } {
+/** Parse the KFN binary into directory entries + Song.ini text (+ header TITL/ARTS). */
+function parseKfn(data: Uint8Array): { entries: KfnEntry[]; songIni: string; headerTitle: string; headerArtist: string } {
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const dec = new TextDecoder();
 
@@ -42,12 +42,19 @@ function parseKfn(data: Uint8Array): { entries: KfnEntry[]; songIni: string } {
   if (data[0] !== 0x4b || data[1] !== 0x46 || data[2] !== 0x4e || data[3] !== 0x42) {
     throw new Error('Не KFN файл (отсутствует сигнатура KFNB)');
   }
+  let headerTitle = '';
+  let headerArtist = '';
   let pos = 4;
   while (pos < data.length) {
     const name = dec.decode(data.slice(pos, pos + 4)); pos += 4;
     const dtype = data[pos]; pos++;
     const val = dv.getUint32(pos, true); pos += 4;
-    if (dtype === 2) pos += val; // skip string payload
+    if (dtype === 2) {
+      const str = dec.decode(data.slice(pos, pos + val));
+      if (name === 'TITL') headerTitle = str;
+      if (name === 'ARTS') headerArtist = str;
+      pos += val; // skip string payload
+    }
     if (name === 'ENDH') break;
   }
 
@@ -72,7 +79,7 @@ function parseKfn(data: Uint8Array): { entries: KfnEntry[]; songIni: string } {
   const songEntry = entries.find((e) => e.type === 1 || e.name.toLowerCase().endsWith('.ini'));
   if (!songEntry) throw new Error('Song.ini не найден в KFN');
   const songIni = dec.decode(data.slice(songEntry.absOffset, songEntry.absOffset + songEntry.inLen));
-  return { entries, songIni };
+  return { entries, songIni, headerTitle, headerArtist };
 }
 
 /** One [EffN] section parsed into a flat key→value map. */
@@ -349,7 +356,7 @@ function effectToTrack(effect: EffectFields, index: number): TextTrack {
  */
 export function importFromKfn(data: Uint8Array): KfnImportResult {
   const parsed = parseKfn(data);
-  const { entries, songIni } = parsed;
+  const { entries, songIni, headerTitle, headerArtist } = parsed;
   const effects = parseEffects(songIni);
   const textTracks = effects
     .map((eff, i) => effectToTrack(eff, i))
@@ -391,7 +398,19 @@ export function importFromKfn(data: Uint8Array): KfnImportResult {
 
   const tracks: Track[] = [...textTracks, ...audioTracks];
   const background = extractBackground(songIni, entries, data) ?? createBackground();
-  return { project: { tracks, background }, audioByRole };
+
+  // Song metadata from [General]; the container header's TITL/ARTS are the
+  // fallback when the ini fields are absent.
+  const iniField = (key: string): string => (songIni.match(new RegExp(`^${key}=(.*)$`, 'm'))?.[1] ?? '').trim();
+  const metadata = createProjectMetadata();
+  metadata.title = iniField('Title') || headerTitle;
+  metadata.artist = iniField('Artist') || headerArtist;
+  metadata.album = iniField('Album');
+  metadata.composer = iniField('Composer');
+  metadata.year = iniField('Year');
+  metadata.comment = iniField('Comment');
+
+  return { project: { tracks, background, metadata }, audioByRole };
 }
 
 /** Helper: build an audio track for a role (empty audioFileName = no audio). */

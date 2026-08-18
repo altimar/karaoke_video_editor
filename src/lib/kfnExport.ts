@@ -12,9 +12,10 @@
  * Structure reverse-engineered by George Yunaev (ulduzsoft.com) and verified
  * against real .kfn sample files.
  */
-import { Project, TextTrack } from '../types';
+import { Project, TextTrack, ProjectMetadata, createProjectMetadata } from '../types';
 import { getTextTracks, getAudioTrackByRole, AudioRole } from '../types';
 import { ExportCanceledError } from './exportErrors';
+import { encodeMp3Channels, isMp3, decodeToChannels } from './mp3Encoder';
 import { previewSecToTrajectory } from './text_renderers/scroller';
 
 /** Max outline thickness KaraFun Studio supports (Frame0..Frame5). */
@@ -40,13 +41,6 @@ export function collectKfnWarnings(project: Project): string[] {
   const minus = getAudioTrackByRole(project, 'minus');
   if (!minus || !minus.audioFileName) {
     warnings.push('Дорожка «минус» пуста — экспорт KaraFun будет без инструментала (Source).');
-  }
-  // Video background: we embed MP4, but the KFN spec only lists wmv/avi/mpg
-  // for type-5 files — KaraFun's player may refuse to play it.
-  if (project.background.bgType === 'video' && project.background.bgVideoFileName) {
-    warnings.push(
-      'Видео-фон вшивается как MP4; KaraFun официально поддерживает только WMV/AVI/MPG — плеер KaraFun может его не показать.',
-    );
   }
   for (const track of textTracks) {
     if (track.style.layout !== 'scroller' && track.style.layout !== 'classic') {
@@ -307,22 +301,24 @@ function buildSongIni(
   bgVideoFileName: string | null,
   leadAudioFileName: string | null,
   backAudioFileName: string | null,
+  metadata: ProjectMetadata,
 ): { ini: string; warnings: string[] } {
   const warnings: string[] = [];
   const lines: string[] = [];
 
-  // [General] section
-  const title = (audioFileName.replace(/\.[^.]+$/, '') || 'Karaoke').replace(/[_]/g, ' ');
+  // [General] section. Song metadata fills the KaraFun fields; the title
+  // falls back to the audio filename when not entered.
+  const title = metadata.title || (audioFileName.replace(/\.[^.]+$/, '') || 'Karaoke').replace(/[_]/g, ' ');
   lines.push('[General]');
   lines.push(`Title=${title}`);
-  lines.push('Artist=');
-  lines.push('Album=');
-  lines.push('Composer=');
-  lines.push('Year=');
+  lines.push(`Artist=${metadata.artist}`);
+  lines.push(`Album=${metadata.album}`);
+  lines.push(`Composer=${metadata.composer}`);
+  lines.push(`Year=${metadata.year}`);
   lines.push('Track=');
   lines.push('GenreID=-1');
   lines.push('Copyright=');
-  lines.push('Comment=');
+  lines.push(`Comment=${metadata.comment}`);
   lines.push(`Source=1,I,${audioFileName}`);
   // EffectCount covers ALL effects: background image/video + text tracks.
   lines.push(`EffectCount=${tracks.length + (bgImageFileName ? 1 : 0) + (bgVideoFileName ? 1 : 0)}`);
@@ -375,8 +371,7 @@ function buildSongIni(
   }
 
   // Background video effect (ID=62), same first-position convention. We embed
-  // MP4 (type=5 file); KaraFun's own files use WMV, so the player may refuse —
-  // a warning is emitted in collectKfnWarnings.
+  // MP4 (type=5 file) — verified to play fine in the KaraFun player.
   if (bgVideoFileName) {
     lines.push(`[Eff${effIndex + 1}]`);
     lines.push('ID=62');
@@ -462,6 +457,26 @@ export interface KfnExportResult {
   warnings: string[];
 }
 
+/**
+ * Prepare one role's audio for embedding: files that are ALREADY mp3 go in
+ * untouched (no lossy→lossy re-encode); anything else (WAV stems, m4a…) is
+ * decoded and re-encoded to MP3 192 kbps (~7x smaller than WAV) — the format
+ * KaraFun itself uses inside its .kfn files. On ANY failure (undecodable
+ * bytes, encoder error) falls back to the original bytes under the original
+ * name — export must never die here.
+ */
+async function toMp3Entry(bytes: Uint8Array, filename: string): Promise<DirEntry> {
+  try {
+    if (isMp3(bytes)) return { filename, fileType: 2, data: bytes };
+    const { channels, sampleRate } = await decodeToChannels(bytes);
+    const mp3 = await encodeMp3Channels(channels, sampleRate);
+    return { filename: filename.replace(/\.[^.]+$/, '') + '.mp3', fileType: 2, data: mp3 };
+  } catch (e) {
+    console.warn(`KFN: аудио «${filename}» оставлено как есть (MP3-кодирование недоступно):`, e);
+    return { filename, fileType: 2, data: bytes };
+  }
+}
+
 /** Options for an async KFN export run. */
 export interface KfnExportOptions {
   /** If provided and aborted, the export rejects with ExportCanceledError. */
@@ -497,7 +512,8 @@ export async function exportToKfn(
   };
 
   // Audio roles: minus → [General] Source (type 2), lead → [MP3Music] TrackN
-  // (type 0, guide vocal), back → [MP3Music] TrackN (type 2).
+  // (type 0, guide vocal), back → [MP3Music] TrackN (type 2). Each role is
+  // re-encoded to MP3 (unless already mp3) before embedding — see toMp3Entry.
   const minusTrack = getAudioTrackByRole(project, 'minus');
   const leadTrack = getAudioTrackByRole(project, 'lead');
   const backTrack = getAudioTrackByRole(project, 'back');
@@ -507,8 +523,8 @@ export async function exportToKfn(
   const audioFileName = minusTrack?.audioFileName || 'song.mp3';
   const leadAudioFileName = leadBytes && leadTrack?.audioFileName ? leadTrack.audioFileName : null;
   const backAudioFileName = backBytes && backTrack?.audioFileName ? backTrack.audioFileName : null;
-  const title = audioFileName.replace(/\.[^.]+$/, '').replace(/[_]/g, ' ');
-  const source = `1,I,${audioFileName}`;
+  const metadata = project.metadata ?? createProjectMetadata();
+  const title = metadata.title || (audioFileName.replace(/\.[^.]+$/, '') || 'Karaoke').replace(/[_]/g, ' ');
 
   const textTracks = getTextTracks(project);
   if (textTracks.length === 0) {
@@ -519,7 +535,23 @@ export async function exportToKfn(
   }
   report(0.02);
 
-  // Phase 1: build Song.ini.
+  // Phase 0: prepare the role audio (MP3 — see toMp3Entry; raw WAV stems
+  // would bloat the .kfn ~7x, and files already in mp3 pass through untouched).
+  const roleCount = 1 + (leadBytes && leadAudioFileName ? 1 : 0) + (backBytes && backAudioFileName ? 1 : 0);
+  let roleDone = 0;
+  const convertRole = async (bytes: Uint8Array, name: string): Promise<DirEntry> => {
+    checkAbort();
+    const entry = await toMp3Entry(bytes, name);
+    roleDone++;
+    report(0.02 + (roleDone / roleCount) * 0.4);
+    await yield_();
+    return entry;
+  };
+  const minusEntry = await convertRole(minusBytes, audioFileName);
+  const leadEntry = leadBytes && leadAudioFileName ? await convertRole(leadBytes, leadAudioFileName) : null;
+  const backEntry = backBytes && backAudioFileName ? await convertRole(backBytes, backAudioFileName) : null;
+
+  // Phase 1: build Song.ini (audio references point at the converted names).
   checkAbort();
   let bgImageFileName: string | null = null;
   if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
@@ -532,25 +564,20 @@ export async function exportToKfn(
     project.background.bgType === 'video' && bgVideoBytes && project.background.bgVideoFileName
       ? 'background.' + (project.background.bgVideoFileName.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'mp4')
       : null;
-  const { ini: songIni, warnings } = buildSongIni(textTracks, audioFileName, bgImageFileName, bgVideoFileName, leadAudioFileName, backAudioFileName);
-  if (bgVideoFileName) {
-    warnings.push(
-      'Видео-фон вшит как MP4; KaraFun официально поддерживает только WMV/AVI/MPG — плеер KaraFun может его не показать.',
-    );
-  }
+  const { ini: songIni, warnings } = buildSongIni(
+    textTracks, minusEntry.filename, bgImageFileName, bgVideoFileName,
+    leadEntry?.filename ?? null, backEntry?.filename ?? null,
+    metadata,
+  );
   const songIniBytes = new TextEncoder().encode(songIni);
-  report(0.1);
+  report(0.5);
   await yield_();
 
-  // Phase 2: collect container entries — audio (minus + optional lead/back), bg, Song.ini.
+  // Phase 2: collect container entries — audio (converted), bg, Song.ini.
   checkAbort();
-  const entries: DirEntry[] = [{ filename: audioFileName, fileType: 2, data: minusBytes }];
-  if (leadBytes && leadAudioFileName) {
-    entries.push({ filename: leadAudioFileName, fileType: 2, data: leadBytes });
-  }
-  if (backBytes && backAudioFileName) {
-    entries.push({ filename: backAudioFileName, fileType: 2, data: backBytes });
-  }
+  const entries: DirEntry[] = [minusEntry];
+  if (leadEntry) entries.push(leadEntry);
+  if (backEntry) entries.push(backEntry);
   if (project.background.bgType === 'image' && project.background.bgImageDataUrl) {
     const decoded = decodeDataUrl(project.background.bgImageDataUrl);
     if (decoded) entries.push({ filename: decoded.filename, fileType: 3, data: decoded.bytes });
@@ -559,13 +586,13 @@ export async function exportToKfn(
     entries.push({ filename: bgVideoFileName, fileType: 5, data: bgVideoBytes });
   }
   entries.push({ filename: 'Song.ini', fileType: 1, data: songIniBytes });
-  report(0.35);
+  report(0.6);
   await yield_();
 
   // Phase 3: assemble the binary container (header + directory + data). The
   // directory builder copies all file bytes — dominated by the audio size.
   checkAbort();
-  const header = buildHeader(title, '', source);
+  const header = buildHeader(title, metadata.artist, `1,I,${minusEntry.filename}`);
   const dirAndData = buildDirectoryAndData(entries);
   report(0.9);
   await yield_();

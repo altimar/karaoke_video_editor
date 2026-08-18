@@ -49,9 +49,22 @@ test('export KFN: downloaded container parses with the app importer, audio in fu
   // Lyrics track survived the round-trip.
   const textTracks = result.project.tracks.filter((t: any) => t.type === 'text');
   expect(textTracks.length).toBe(1);
-  // The embedded audio is the FULL loaded WAV — not truncated (regression:
-  // the reported bug cut audio to ~3 minutes after save).
+  // The embedded audio must cover the FULL loaded duration — not truncated
+  // (regression: the reported bug cut audio to ~3 minutes after save). The
+  // exporter re-encodes roles to AAC (m4a), so instead of byte-comparing the
+  // original WAV we decode the embedded audio back in the page and check its
+  // duration.
   expect(result.audioByRole.has('minus')).toBe(true);
   const stored = result.audioByRole.get('minus')!;
-  expect(stored.length).toBe(makeWavBytes(WAV_SECONDS).length);
+  expect(stored.length).toBeGreaterThan(0);
+  const decodedSec = await page.evaluate(async (b64: string) => {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const ctx = new AudioContext();
+    const buf = await ctx.decodeAudioData(u8.buffer);
+    return buf.duration;
+  }, Buffer.from(stored).toString('base64'));
+  expect(decodedSec).toBeGreaterThan(WAV_SECONDS - 1);
+  expect(decodedSec).toBeLessThan(WAV_SECONDS + 1);
 });
