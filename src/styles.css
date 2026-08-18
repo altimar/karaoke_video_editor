@@ -483,6 +483,32 @@ textarea.lyrics {
   margin-left: auto;
   flex-shrink: 0;
 }
+/* Tool switch in the timeline header: automation vs phrase editing. */
+.tl-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.tl-tool-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-dim);
+}
+.tl-tool-btn.active {
+  background: #232639;
+  border-color: #3a3f5a;
+  color: var(--accent);
+}
+.tl-tool-icon {
+  font-size: 12px;
+  line-height: 1;
+}
 .tl-zoom-btn {
   width: 26px;
   height: 26px;
@@ -989,6 +1015,13 @@ textarea.lyrics {
      tappable and shows its action via title. */
   .topbar-btn-label {
     display: none;
+  }
+  /* Same for the timeline tool switch: icons only on phones. */
+  .tl-tool-label {
+    display: none;
+  }
+  .tl-tool-btn {
+    padding: 0 7px;
   }
   /* Hide the title text, keep only the mic icon (saves space on phones). */
   .topbar-title {

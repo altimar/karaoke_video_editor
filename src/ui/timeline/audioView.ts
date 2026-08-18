@@ -1,7 +1,12 @@
 /**
- * TrackView strategy for AUDIO tracks: draws the waveform peaks + volume
- * automation envelope, hit-tests envelope points for dragging, handles
- * background clicks (add a point) and double-taps (delete a point).
+ * TrackView strategy for AUDIO tracks. Two interactive tools (timeline header):
+ *
+ *  - automation: draws the waveform peaks + volume-automation envelope,
+ *    hit-tests envelope points for dragging, handles background clicks (add a
+ *    point) and double-taps (delete a point).
+ *  - edit: the envelope is hidden; instead, sound chunks between relative
+ *    silences are highlighted on the ACTIVE row, can be hovered and dragged
+ *    onto another audio track (onDrop mixes them into that role).
  *
  * All track-type-specific logic for audio lives here. The orchestrator hands it
  * the row position + env (including pre-computed peaks). It never recomputes
@@ -11,7 +16,9 @@ import { store } from '../../state/store';
 import { audioEngine } from '../../lib/audioEngine';
 import { computePeaks } from '../../lib/waveform';
 import { insertPoint, removePoint, movePoint, clampGain } from '../../lib/volumeAutomation';
-import { AudioTrack } from '../../types';
+import { AudioChunk, detectChunks, chunkAtMs } from '../../lib/audioChunks';
+import { isEditableRole, moveChunkToRole } from '../../lib/audioEdit';
+import { AudioTrack, Track } from '../../types';
 import { AUDIO_ROW_H, AUDIO_ROW_COLLAPSED_H } from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
 
@@ -65,9 +72,15 @@ export const audioView: TrackView<AudioTrack> = {
     const sepW = Math.min(env.width, Math.ceil(env.scrollLeft + env.viewportWidth)) - sepX;
     ctx.fillRect(sepX, rowY + h - 1, Math.max(0, sepW), 1);
 
-    // Volume automation envelope — visible in the collapsed row too (that's
-    // the point of keeping it), just thinner with smaller handles.
-    drawEnvelope(ctx, track, rowY, env, h);
+    // Volume automation envelope (automation tool) — visible in the collapsed
+    // row too (that's the point of keeping it), just thinner with smaller
+    // handles. In the edit tool the strips are hidden and chunk regions show
+    // on the active row instead.
+    if (env.tool === 'edit') {
+      drawEditOverlay(ctx, track, rowY, env, h);
+    } else {
+      drawEnvelope(ctx, track, rowY, env, h);
+    }
   },
 
   hitTest(track: AudioTrack, rowY: number, x: number, y: number, env: TimelineEnv): TrackDrag | null {
@@ -75,6 +88,20 @@ export const audioView: TrackView<AudioTrack> = {
     if (track.id !== env.activeTrackId) return null;
     const ti = indexOfTrack(track);
     if (ti < 0) return null;
+    // Edit tool: grab a detected sound chunk of the active editable row. The
+    // hit zone is the chunk's own rectangle (the row's vertical span at the
+    // chunk's time range) — clicks elsewhere on the canvas stay free for seek.
+    if (env.tool === 'edit') {
+      if (y < rowY || y > rowY + AUDIO_ROW_H) return null;
+      if (!isEditableRole(track.role)) return null;
+      const buf = audioEngine.getBuffer(track.role);
+      if (!buf) return null;
+      const chunks = detectChunks(buf);
+      const ci = chunkAtMs(chunks, env.xToMs(x));
+      if (ci < 0) return null;
+      const c = chunks[ci];
+      return { kind: 'chunk', trackIndex: ti, chunkIndex: ci, startMs: c.startMs, endMs: c.endMs, moved: false };
+    }
     const midY = rowY + AUDIO_ROW_H / 2;
     for (const p of track.volumeAutomation) {
       const px = env.msToX(p.timeMs);
@@ -86,9 +113,12 @@ export const audioView: TrackView<AudioTrack> = {
     return null;
   },
 
-  onBackgroundClick(_track: AudioTrack, rowY: number, x: number, y: number, env: TimelineEnv): void {
+  onBackgroundClick(_track: AudioTrack, rowY: number, x: number, y: number, env: TimelineEnv): boolean | void {
     // Adding points happens on the active row only.
     if (_track.id !== env.activeTrackId) return;
+    // In the edit tool the row is not an envelope editor — decline so the
+    // orchestrator falls through to a seek.
+    if (env.tool === 'edit') return false;
     const ti = indexOfTrack(_track);
     if (ti < 0) return;
     const midY = rowY + AUDIO_ROW_H / 2;
@@ -106,6 +136,11 @@ export const audioView: TrackView<AudioTrack> = {
   },
 
   onDrag(drag, rowY, x, y, env: TimelineEnv): void {
+    // A chunk drag has no live model mutation — the move happens on drop.
+    if (drag.kind === 'chunk') {
+      drag.moved = true;
+      return;
+    }
     if (drag.kind !== 'volume') return;
     const ti = drag.trackIndex;
     const midY = rowY + AUDIO_ROW_H / 2;
@@ -133,6 +168,16 @@ export const audioView: TrackView<AudioTrack> = {
       const at = p.tracks[ti];
       if (at && at.type === 'audio') at.volumeAutomation = removePoint(at.volumeAutomation, fromTime);
     });
+  },
+
+  onDrop(drag, targetTrack): void {
+    if (drag.kind !== 'chunk') return;
+    const src = store.getProject().tracks[drag.trackIndex];
+    if (!src || src.type !== 'audio') return;
+    if (!targetTrack || targetTrack.type !== 'audio') return;
+    if (targetTrack.role === src.role) return;
+    // Fire-and-forget: the reload redraws both rows when the new audio lands.
+    void moveChunkToRole(src.role, targetTrack.role, drag.startMs, drag.endMs);
   },
 };
 
@@ -177,5 +222,61 @@ function drawEnvelope(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEn
       ctx.fill();
       ctx.stroke();
     }
+  }
+}
+
+/**
+ * Edit-tool overlay: movable chunk regions on the ACTIVE audio row + the drop
+ * indicator band on the row under the pointer while a chunk drag is active.
+ */
+function drawEditOverlay(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEnv, h: number): void {
+  const drag = env.drag?.kind === 'chunk' ? env.drag : null;
+  const srcTrack = drag ? (store.getProject().tracks[drag.trackIndex] as Track | undefined) : undefined;
+
+  // Chunk regions — only on the active editable row with loaded audio.
+  if (track.id === env.activeTrackId && isEditableRole(track.role)) {
+    const buf = audioEngine.getBuffer(track.role);
+    if (buf) {
+      const chunks: AudioChunk[] = detectChunks(buf);
+      // Hover the chunk under the pointer (only when not dragging).
+      let hoverIdx = -1;
+      const p = env.pointer;
+      if (!drag && p && p.y >= rowY && p.y <= rowY + h) {
+        hoverIdx = chunkAtMs(chunks, env.xToMs(p.x));
+      }
+      const dragIdx = drag && srcTrack?.id === track.id ? drag.chunkIndex : -1;
+      for (let i = 0; i < chunks.length; i++) {
+        const x0 = env.msToX(chunks[i].startMs);
+        const x1 = env.msToX(chunks[i].endMs);
+        if (x1 < env.scrollLeft - 4 || x0 > env.scrollLeft + env.viewportWidth + 4) continue; // cull
+        if (i === dragIdx) {
+          ctx.fillStyle = 'rgba(110,168,254,0.32)';
+          ctx.fillRect(x0, rowY, x1 - x0, h - 1);
+          ctx.strokeStyle = '#6ea8fe';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x0 + 0.5, rowY + 0.5, Math.max(1, x1 - x0 - 1), h - 2);
+        } else if (i === hoverIdx) {
+          ctx.fillStyle = 'rgba(110,168,254,0.20)';
+          ctx.fillRect(x0, rowY, x1 - x0, h - 1);
+        } else {
+          ctx.fillStyle = 'rgba(110,168,254,0.08)';
+          ctx.fillRect(x0, rowY, x1 - x0, h - 1);
+        }
+      }
+    }
+  }
+
+  // Drop indicator: where the held chunk would land. Valid target = another
+  // editable role (accent); the 'original' row shows a denied band; the source
+  // row itself shows nothing (dropping there is a no-op, not an error).
+  if (drag && env.dropTargetTrackId === track.id && srcTrack && srcTrack.type === 'audio' && srcTrack.role !== track.role) {
+    const valid = isEditableRole(track.role);
+    const x0 = env.msToX(drag.startMs);
+    const x1 = env.msToX(drag.endMs);
+    ctx.fillStyle = valid ? 'rgba(255,225,77,0.22)' : 'rgba(255,92,108,0.18)';
+    ctx.fillRect(x0, rowY, x1 - x0, h - 1);
+    ctx.strokeStyle = valid ? '#ffe14d' : '#ff5c6c';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x0 + 0.5, rowY + 0.5, Math.max(1, x1 - x0 - 1), h - 2);
   }
 }

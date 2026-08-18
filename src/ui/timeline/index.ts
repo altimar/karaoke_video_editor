@@ -33,7 +33,7 @@ import { applyBgFile } from '../bgFile';
 import {
   RULER_H, TOP_PAD, TRACK_PAD, BG_ROW_H, rowHeight, trackTopForIndex, trackIndexAtY, bgRowTop, isBgRowAtY,
 } from './coords';
-import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
+import { AudioTool, Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
 import { textView, pickMarker } from './textView';
 import { audioView } from './audioView';
 
@@ -68,6 +68,40 @@ export function createTimeline(
   headHint.className = 'hint';
   headHint.textContent = '— клик = перемотка, перетаскивайте маркеры';
   head.appendChild(headHint);
+
+  // Audio-row tool switch: volume automation vs phrase editing (drag chunks
+  // between audio tracks). Automation is the default (historical behavior).
+  const toolControls = document.createElement('div');
+  toolControls.className = 'tl-tools';
+  const makeToolBtn = (tool: AudioTool, label: string, title: string): HTMLButtonElement => {
+    const btn = document.createElement('button');
+    btn.className = 'tl-tool-btn';
+    btn.title = title;
+    btn.dataset.testid = `tl-tool-${tool}`;
+    const icon = document.createElement('span');
+    icon.className = 'tl-tool-icon';
+    icon.textContent = tool === 'automation' ? '📈' : '✂️';
+    const text = document.createElement('span');
+    text.className = 'tl-tool-label';
+    text.textContent = label;
+    btn.appendChild(icon);
+    btn.appendChild(text);
+    btn.addEventListener('click', () => setTool(tool));
+    return btn;
+  };
+  const automationBtn = makeToolBtn(
+    'automation',
+    'Автоматизация',
+    'Инструмент «Автоматизация»: огибающая громкости — клик добавляет точку, перетаскивание двигает, двойной клик удаляет',
+  );
+  const editBtn = makeToolBtn(
+    'edit',
+    'Редактирование',
+    'Инструмент «Редактирование»: перетаскивайте фрагменты звука между аудиодорожками (фраза из бэка — в вокал и т.п.)',
+  );
+  toolControls.appendChild(automationBtn);
+  toolControls.appendChild(editBtn);
+  head.appendChild(toolControls);
 
   // Zoom controls (always visible; on desktop Shift+wheel still works too).
   const zoomControls = document.createElement('div');
@@ -120,6 +154,20 @@ export function createTimeline(
   // syllable that the next Space will stamp. Used to preview it beside the playhead.
   let recording = false;
   let recordCursor = 0;
+  // Active audio-row tool (see the header switch) + pointer tracking for the
+  // edit tool's hover/drop effects.
+  let tool: AudioTool = 'automation';
+  let pointer: { x: number; y: number } | null = null;
+  let dropTargetTrackId: string | null = null;
+
+  function setTool(t: AudioTool): void {
+    if (tool === t) return;
+    tool = t;
+    automationBtn.classList.toggle('active', tool === 'automation');
+    editBtn.classList.toggle('active', tool === 'edit');
+    scheduleDraw();
+  }
+  automationBtn.classList.add('active');
 
   // Viewport width = the on-screen canvas. Content width = the full virtual
   // timeline (viewport × zoom); the spacer is sized to it so the scroll
@@ -181,6 +229,7 @@ export function createTimeline(
     const rect = canvas.getBoundingClientRect();
     const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
+    pointer = { x, y };
     const project = store.getProject();
     const model = project.tracks;
     const disp = displayTracks(project);
@@ -203,19 +252,22 @@ export function createTimeline(
       if (hit) {
         drag = hit;
         canvas.setPointerCapture(e.pointerId);
+        // A drop-capable drag starts hovering over its own row.
+        if (view.onDrop) dropTargetTrackId = track.id;
         return;
       }
     }
 
-    // 2. Background click within a row (e.g. add a volume point).
+    // 2. Background click within a row (e.g. add a volume point). A view may
+    // decline (edit tool) — then fall through to the seek fallback.
     const ti = trackIndexAtY(y, disp, project.activeTrackId);
     if (ti >= 0) {
       const track = disp[ti];
       const view = VIEWS[track.type];
       if (view?.onBackgroundClick) {
         const rowY = trackTopForIndex(ti, disp, project.activeTrackId);
-        view.onBackgroundClick(track, rowY, x, y, env);
-        return;
+        const handled = view.onBackgroundClick(track, rowY, x, y, env);
+        if (handled !== false) return;
       }
     }
 
@@ -260,27 +312,59 @@ export function createTimeline(
   });
 
   canvas.addEventListener('pointermove', (e) => {
-    if (!drag || isPinching) return;
     const rect = canvas.getBoundingClientRect();
     const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
-    const project = store.getProject();
-    const track = project.tracks[drag.trackIndex];
-    const view = VIEWS[track?.type ?? ''];
-    if (!view || !track) return;
-    const rowY = displayRowTop(track.id);
-    view.onDrag(drag, rowY, x, y, makeEnv());
+    pointer = { x, y };
+    if (drag && !isPinching) {
+      const project = store.getProject();
+      const track = project.tracks[drag.trackIndex];
+      const view = VIEWS[track?.type ?? ''];
+      if (view && track) {
+        // A drop-capable drag (e.g. a chunk) tracks the row under the pointer
+        // so views can draw the drop indicator there.
+        if (view.onDrop) {
+          const disp = displayTracks(project);
+          const di = trackIndexAtY(y, disp, project.activeTrackId);
+          dropTargetTrackId = di >= 0 ? disp[di].id : null;
+        }
+        const rowY = displayRowTop(track.id);
+        view.onDrag(drag, rowY, x, y, makeEnv());
+      }
+    }
+    // Hover effects (chunk under the cursor) need a repaint too; rAF-throttled.
+    scheduleDraw();
   });
 
   canvas.addEventListener('pointerup', (e) => {
     if (drag) {
+      const project = store.getProject();
+      const track = project.tracks[drag.trackIndex];
+      const view = VIEWS[track?.type ?? ''];
+      if (view?.onDrop && track) {
+        const rect = canvas.getBoundingClientRect();
+        const y = e.clientY - rect.top;
+        const disp = displayTracks(project);
+        const di = trackIndexAtY(y, disp, project.activeTrackId);
+        const target = di >= 0 ? disp[di] : null;
+        view.onDrop(drag, target, makeEnv());
+      }
       try {
         canvas.releasePointerCapture(e.pointerId);
       } catch {
         /* ignore */
       }
       drag = null;
+      dropTargetTrackId = null;
+      scheduleDraw();
     }
+  });
+
+  // Off-canvas pointer: drop hover effects (a captured drag keeps its events).
+  canvas.addEventListener('pointerleave', () => {
+    if (drag) return;
+    pointer = null;
+    scheduleDraw();
   });
 
   // Zoom: Shift+wheel zooms (anchored at the cursor); plain wheel scrolls.
@@ -434,6 +518,10 @@ export function createTimeline(
       scrollLeft: scroll.scrollLeft,
       viewportWidth: scroll.clientWidth,
       activeTrackId: store.getProject().activeTrackId,
+      tool,
+      pointer,
+      dropTargetTrackId,
+      drag,
     };
   }
 
