@@ -308,6 +308,36 @@ test('no background → no image entry, no ID=51 effect', async () => {
   assert(!/ID=51/.test(insp.songIni), 'no ID=51 effect without a background image');
 });
 
+test('lead (guide vocal) round-trips via [MP3Music] TrackN by type', async () => {
+  // KaraFun stores the guide/lead vocal as an [MP3Music] track with type 0
+  // (verified on a KaraFun-saved file), the backing vocal as type 2.
+  const p = JSON.parse(JSON.stringify(makeProject()));
+  p.tracks.push({ id: 'a4', type: 'audio', name: 'Вокал', role: 'lead', audioFileName: 'lead vocal (1).mp3', volumeAutomation: [] });
+  const leadBytes = new Uint8Array([0x11, 0x22, 0x33, 0x44]);
+  const map = new Map(fakeAudioMap);
+  map.set('lead', leadBytes);
+
+  const r = await exportToKfn(p, map);
+  const insp = await inspect(r.blob);
+  // Directory: minus + lead + back (all type 2) + Song.ini.
+  assert(insp.entries.length === 4, `4 entries with lead (got ${insp.entries.length})`);
+  assert(insp.entries.some((e: any) => e.name === 'lead vocal (1).mp3' && e.type === 2), 'lead audio embedded as its own type=2 file (name with spaces)');
+  // Track0 = lead (type 0), Track1 = back (type 2) — same line shape as KaraFun's own files.
+  assert(/NumTracks=2/.test(insp.songIni), `NumTracks=2 (got ${/NumTracks=.+/.exec(insp.songIni)?.[0]})`);
+  assert(/Track0=lead vocal \(1\)\.mp3,0,0,,/.test(insp.songIni), `Track0 is the guide vocal type 0 (got ${/Track0=[^\r\n]+/.exec(insp.songIni)?.[0]})`);
+  assert(/Track1=back\.mp3,2,0,,/.test(insp.songIni), `Track1 is the back vocal type 2 (got ${/Track1=[^\r\n]+/.exec(insp.songIni)?.[0]})`);
+
+  const imported = importFromKfn(new Uint8Array(await r.blob.arrayBuffer()));
+  assert(imported.audioByRole.has('lead'), 'lead audio imported');
+  const gotLead = imported.audioByRole.get('lead')!;
+  assert(gotLead.length === leadBytes.length && gotLead.every((b: number, i: number) => b === leadBytes[i]), 'lead bytes round-trip intact');
+  const it = imported.project.tracks as any[];
+  const leadTrack = it.find((t) => t.type === 'audio' && t.role === 'lead');
+  assert(leadTrack && leadTrack.audioFileName === 'lead vocal (1).mp3', `lead track keeps filename (got "${leadTrack?.audioFileName}")`);
+  // Back is still imported alongside the lead.
+  assert(imported.audioByRole.has('back'), 'back audio still imported with lead present');
+});
+
 test('video background → ID=62 effect + type=5 entry with the full MP4 bytes', async () => {
   const p = JSON.parse(JSON.stringify(makeProject()));
   p.background.bgType = 'video';

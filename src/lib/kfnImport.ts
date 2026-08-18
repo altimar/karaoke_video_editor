@@ -342,9 +342,10 @@ function effectToTrack(effect: EffectFields, index: number): TextTrack {
 
 /**
  * Import a .kfn file: extract audio + lyrics/timings. Text effects (ID=1/2)
- * become text tracks. The main audio (`[General] Source`, instrumental) becomes
- * the 'minus' role; a `[MP3Music] Track0` (backing vocals) becomes the 'back'
- * role. Returns the project's tracks + per-role raw audio bytes.
+ * become text tracks. Audio roles: `[General] Source` (instrumental) → 'minus';
+ * `[MP3Music]` extra tracks map by their type field — 0 = guide vocal (lead,
+ * verified on a real KaraFun-saved file), 2 = backing vocals (back).
+ * Returns the project's tracks + per-role raw audio bytes.
  */
 export function importFromKfn(data: Uint8Array): KfnImportResult {
   const parsed = parseKfn(data);
@@ -355,26 +356,37 @@ export function importFromKfn(data: Uint8Array): KfnImportResult {
     .filter((t) => t.lines.some((l) => l.syllables.length > 0));
   if (textTracks.length === 0) throw new Error('В KFN не найдено текстовых дорожек');
 
-  // Parse [General] Source (instrumental → minus) and [MP3Music] Track0 (→ back).
+  // [General] Source (instrumental → minus).
   const sourceName = (songIni.match(/^Source=1,I,(.+)$/m)?.[1] ?? '').trim();
-  const track0Name = (songIni.match(/^Track0=([^,]+)/m)?.[1] ?? '').trim();
   const audioByRole = new Map<AudioRole, Uint8Array>();
   if (sourceName) {
     const entry = entries.find((e) => e.name === sourceName);
     if (entry) audioByRole.set('minus', data.slice(entry.absOffset, entry.absOffset + entry.inLen));
   }
-  if (track0Name) {
-    const entry = entries.find((e) => e.name === track0Name);
-    if (entry) audioByRole.set('back', data.slice(entry.absOffset, entry.absOffset + entry.inLen));
+
+  // [MP3Music] TrackN → roles by type: 0 = guide vocal (lead), 2 = backing (back).
+  // Line format: Track<i>=<file>,<type>,<offset>,<>,<> (name may contain spaces;
+  // split on commas). A guide track may reference the SAME file as Source.
+  const roleByTrackType = new Map<number, AudioRole>([[0, 'lead'], [2, 'back']]);
+  const nameByRole = new Map<AudioRole, string>();
+  for (const m of songIni.matchAll(/^Track\d+=(.*)$/gm)) {
+    const parts = m[1].trim().split(',');
+    const name = (parts[0] ?? '').trim();
+    const role = roleByTrackType.get(parseInt(parts[1] ?? '', 10));
+    if (!name || !role || nameByRole.has(role)) continue;
+    const entry = entries.find((e) => e.name === name);
+    if (entry) {
+      audioByRole.set(role, data.slice(entry.absOffset, entry.absOffset + entry.inLen));
+      nameByRole.set(role, name);
+    }
   }
 
   // Build the four fixed audio-role tracks; fill filenames from what was found.
-  // KFN has no lead-vocal slot, so 'lead' is always empty after import.
   const audioTracks: Track[] = [
     makeAudio('original'),
-    makeAudio('lead'),
+    makeAudio('lead', nameByRole.get('lead') ?? ''),
     makeAudio('minus', audioByRole.has('minus') ? sourceName : ''),
-    makeAudio('back', audioByRole.has('back') ? track0Name : ''),
+    makeAudio('back', nameByRole.get('back') ?? ''),
   ];
 
   const tracks: Track[] = [...textTracks, ...audioTracks];

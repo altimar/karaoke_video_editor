@@ -305,6 +305,7 @@ function buildSongIni(
   audioFileName: string,
   bgImageFileName: string | null,
   bgVideoFileName: string | null,
+  leadAudioFileName: string | null,
   backAudioFileName: string | null,
 ): { ini: string; warnings: string[] } {
   const warnings: string[] = [];
@@ -340,11 +341,17 @@ function buildSongIni(
   for (let i = 0; i <= 8; i++) lines.push(`Mark${i}=-1`);
   lines.push('');
 
-  // [MP3Music] — additional audio tracks. KaraFun stores the backing-vocal track
-  // here as Track0 (type 2 = back vocal). Format: <file>,<type>,<offset>,,.
+  // [MP3Music] — additional audio tracks, verified on real KaraFun files:
+  //  - lead/guide vocal → TrackN with type 0 (`guide vocal.kfn`: `Track0=<file>,0,0,,`);
+  //  - backing vocals   → TrackN with type 2 (`with backing vocal audio.kfn`).
+  // The audio itself is embedded as its own type=2 container entry; the track
+  // line format is <file>,<type>,<offset>,,<empty>.
+  const extraTracks: Array<{ name: string; type: 0 | 2 }> = [];
+  if (leadAudioFileName) extraTracks.push({ name: leadAudioFileName, type: 0 });
+  if (backAudioFileName) extraTracks.push({ name: backAudioFileName, type: 2 });
   lines.push('[MP3Music]');
-  lines.push(`NumTracks=${backAudioFileName ? 1 : 0}`);
-  if (backAudioFileName) lines.push(`Track0=${backAudioFileName},2,0,,`);
+  lines.push(`NumTracks=${extraTracks.length}`);
+  extraTracks.forEach((t, i) => lines.push(`Track${i}=${t.name},${t.type},0,,`));
   lines.push('');
 
   // Background image effect (ID=51) goes FIRST, matching KaraFun's file order.
@@ -489,12 +496,16 @@ export async function exportToKfn(
     if (signal?.aborted) throw new ExportCanceledError('Экспорт отменён');
   };
 
-  // Audio roles: minus → [General] Source (type 2), back → [MP3Music] Track0 (type 2).
+  // Audio roles: minus → [General] Source (type 2), lead → [MP3Music] TrackN
+  // (type 0, guide vocal), back → [MP3Music] TrackN (type 2).
   const minusTrack = getAudioTrackByRole(project, 'minus');
+  const leadTrack = getAudioTrackByRole(project, 'lead');
   const backTrack = getAudioTrackByRole(project, 'back');
   const minusBytes = minusTrack?.audioFileName ? audioByRole.get('minus') : undefined;
+  const leadBytes = leadTrack?.audioFileName ? audioByRole.get('lead') : undefined;
   const backBytes = backTrack?.audioFileName ? audioByRole.get('back') : undefined;
   const audioFileName = minusTrack?.audioFileName || 'song.mp3';
+  const leadAudioFileName = leadBytes && leadTrack?.audioFileName ? leadTrack.audioFileName : null;
   const backAudioFileName = backBytes && backTrack?.audioFileName ? backTrack.audioFileName : null;
   const title = audioFileName.replace(/\.[^.]+$/, '').replace(/[_]/g, ' ');
   const source = `1,I,${audioFileName}`;
@@ -521,7 +532,7 @@ export async function exportToKfn(
     project.background.bgType === 'video' && bgVideoBytes && project.background.bgVideoFileName
       ? 'background.' + (project.background.bgVideoFileName.match(/\.([a-z0-9]+)$/i)?.[1] ?? 'mp4')
       : null;
-  const { ini: songIni, warnings } = buildSongIni(textTracks, audioFileName, bgImageFileName, bgVideoFileName, backAudioFileName);
+  const { ini: songIni, warnings } = buildSongIni(textTracks, audioFileName, bgImageFileName, bgVideoFileName, leadAudioFileName, backAudioFileName);
   if (bgVideoFileName) {
     warnings.push(
       'Видео-фон вшит как MP4; KaraFun официально поддерживает только WMV/AVI/MPG — плеер KaraFun может его не показать.',
@@ -531,9 +542,12 @@ export async function exportToKfn(
   report(0.1);
   await yield_();
 
-  // Phase 2: collect container entries — audio (minus + optional back), bg, Song.ini.
+  // Phase 2: collect container entries — audio (minus + optional lead/back), bg, Song.ini.
   checkAbort();
   const entries: DirEntry[] = [{ filename: audioFileName, fileType: 2, data: minusBytes }];
+  if (leadBytes && leadAudioFileName) {
+    entries.push({ filename: leadAudioFileName, fileType: 2, data: leadBytes });
+  }
   if (backBytes && backAudioFileName) {
     entries.push({ filename: backAudioFileName, fileType: 2, data: backBytes });
   }
