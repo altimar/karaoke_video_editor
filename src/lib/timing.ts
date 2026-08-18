@@ -20,6 +20,9 @@ import { getActiveTextTrack } from '../types';
 
 export type RecordStateListener = (recording: boolean, currentIndex: number) => void;
 
+/** A playhead within this distance of a marker counts as "on that syllable". */
+const PLAYHEAD_TOLERANCE_MS = 200;
+
 class TimingCapture {
   private recording = false;
   /** Flat index of the syllable that the next Space will stamp. */
@@ -64,8 +67,23 @@ class TimingCapture {
       });
       this.cursor = fromIndex;
     } else {
-      const firstUntimed = flat.findIndex((x) => x.syl.startMs === null);
-      this.cursor = firstUntimed >= 0 ? firstUntimed : 0;
+      // Seed the cursor from the PLAYHEAD: seeking mid-song before pressing
+      // Record means "re-record the tail from here". The first syllable to be
+      // stamped is the first one at/after the current position — the tolerance
+      // makes a playhead sitting exactly ON a marker count as "from that
+      // syllable", and a playhead mid-syllable re-records the sounding one.
+      // Falls back to the first untimed syllable when nothing timed lies ahead
+      // (fresh project / playhead past the last stamped syllable).
+      const posMs = audioEngine.currentTimeMs;
+      const atPlayhead = flat.findIndex(
+        (x) => x.syl.startMs !== null && x.syl.startMs >= posMs - PLAYHEAD_TOLERANCE_MS,
+      );
+      if (atPlayhead >= 0) {
+        this.cursor = atPlayhead;
+      } else {
+        const firstUntimed = flat.findIndex((x) => x.syl.startMs === null);
+        this.cursor = firstUntimed >= 0 ? firstUntimed : flat.length;
+      }
     }
 
     this.recording = true;
