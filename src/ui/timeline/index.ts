@@ -13,7 +13,7 @@
 import { store } from '../../state/store';
 import { audioEngine } from '../../lib/audioEngine';
 import { timingCapture } from '../../lib/timing';
-import { flatSyllables } from '../../lib/textParser';
+import { flatSyllables, removeSyllableAt } from '../../lib/textParser';
 import { Project, Track, AudioTrack, AudioRole, TextTrack, AUDIO_ROLE_NAMES, createTextTrack, getAudioTrackByRole } from '../../types';
 import {
   loadAudioIntoRole,
@@ -33,7 +33,7 @@ import { applyBgFile } from '../bgFile';
 import {
   RULER_H, TOP_PAD, TRACK_PAD, BG_ROW_H, rowHeight, trackTopForIndex, trackIndexAtY, bgRowTop, isBgRowAtY,
 } from './coords';
-import { AudioTool, Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
+import { AudioTool, Ctx, SyllableSelection, TimelineEnv, TrackDrag, TrackView } from './types';
 import { textView, pickMarker } from './textView';
 import { audioView } from './audioView';
 
@@ -66,7 +66,7 @@ export function createTimeline(
   head.appendChild(headTitle);
   const headHint = document.createElement('span');
   headHint.className = 'hint';
-  headHint.textContent = '— клик = перемотка, перетаскивайте маркеры';
+  headHint.textContent = '— клик = перемотка, маркеры тянутся; клик по слогу + Del — удалить слог';
   head.appendChild(headHint);
 
   // Audio-row tool switch: volume automation vs phrase editing (drag chunks
@@ -159,6 +159,46 @@ export function createTimeline(
   let tool: AudioTool = 'automation';
   let pointer: { x: number; y: number } | null = null;
   let dropTargetTrackId: string | null = null;
+  // The syllable marker selected by the last click (highlighted; Del removes).
+  let selection: SyllableSelection | null = null;
+
+  /** selection, or null if its syllable no longer exists (self-healing —
+   *  text edits invalidate line/syllable indices). */
+  function liveSelection(): SyllableSelection | null {
+    if (!selection) return null;
+    const t = store.getProject().tracks.find((x) => x.id === selection!.trackId);
+    if (!t || t.type !== 'text' || !t.lines[selection.lineIndex]?.syllables[selection.sylIndex]) {
+      selection = null;
+    }
+    return selection;
+  }
+
+  // Del/Backspace deletes the selected syllable (together with its timing —
+  // the OTHER timings are not re-flowed, unlike editing the lyrics text).
+  // Esc just deselects. Ignored while typing in an input/textarea.
+  window.addEventListener('keydown', (e) => {
+    if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== 'Escape') return;
+    const sel = liveSelection();
+    if (!sel) return;
+    const el = document.activeElement;
+    const editable =
+      el instanceof HTMLElement && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
+    if (editable) return;
+    if (e.key === 'Escape') {
+      selection = null;
+      scheduleDraw();
+      return;
+    }
+    e.preventDefault();
+    store.mutate((p) => {
+      const t = p.tracks.find((x) => x.id === sel.trackId);
+      if (t && t.type === 'text') {
+        t.lines = removeSyllableAt(t.lines, sel.lineIndex, sel.sylIndex);
+      }
+    });
+    selection = null;
+    scheduleDraw();
+  });
 
   function setTool(t: AudioTool): void {
     if (tool === t) return;
@@ -230,6 +270,9 @@ export function createTimeline(
     const x = pointerContentX(e.clientX);
     const y = e.clientY - rect.top;
     pointer = { x, y };
+    // Any click re-targets the selection: it's set again right below when the
+    // click claims a syllable marker.
+    selection = null;
     const project = store.getProject();
     const model = project.tracks;
     const disp = displayTracks(project);
@@ -251,6 +294,10 @@ export function createTimeline(
           : view.hitTest(track, rowY, x, y, env);
       if (hit) {
         drag = hit;
+        // Clicking a marker selects it (Del-ready); any other claim deselects.
+        if (hit.kind === 'syllable') {
+          selection = { trackId: track.id, lineIndex: hit.lineIndex, sylIndex: hit.sylIndex };
+        }
         canvas.setPointerCapture(e.pointerId);
         // A drop-capable drag starts hovering over its own row.
         if (view.onDrop) dropTargetTrackId = track.id;
@@ -522,6 +569,7 @@ export function createTimeline(
       pointer,
       dropTargetTrackId,
       drag,
+      selection: liveSelection(),
     };
   }
 

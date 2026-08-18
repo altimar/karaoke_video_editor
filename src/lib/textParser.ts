@@ -115,3 +115,22 @@ export function mergeTimings(oldLines: Line[], newLines: Line[]): void {
     newFlat[i].startMs = i < oldFlat.length ? oldFlat[i].startMs : null;
   }
 }
+
+/**
+ * Remove ONE syllable (text + its timing together) at its exact position —
+ * the timeline's "select a marker, press Del". Unlike editing the text in the
+ * textarea (where mergeTimings re-flows timings POSITIONALLY and everything
+ * after the cut shifts by one), this removes the syllable IN PLACE: every
+ * other syllable keeps its exact timing. A line left with no syllables is
+ * removed entirely. Returns a NEW lines array (inputs untouched); invalid
+ * indices return the input unchanged.
+ */
+export function removeSyllableAt(lines: Line[], lineIndex: number, sylIndex: number): Line[] {
+  const line = lines[lineIndex];
+  if (!line || !line.syllables[sylIndex]) return lines;
+  const syllables = line.syllables.slice();
+  syllables.splice(sylIndex, 1);
+  const next = lines.map((l, i) => (i === lineIndex ? { syllables } : l));
+  if (syllables.length === 0) next.splice(lineIndex, 1);
+  return next;
+}

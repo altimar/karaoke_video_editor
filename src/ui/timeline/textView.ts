@@ -34,7 +34,7 @@ export const textView: TrackView<TextTrack> = {
     const right = env.scrollLeft + env.viewportWidth + 40;
     let timedIndex = 0;
     for (let i = 0; i < flat.length; i++) {
-      const { syl } = flat[i];
+      const { lineIndex, sylIndex, syl } = flat[i];
       if (syl.startMs === null) continue;
       const lane = laneOf(timedIndex, threeLanes);
       timedIndex++;
@@ -42,16 +42,29 @@ export const textView: TrackView<TextTrack> = {
       const mx = env.msToX(syl.startMs);
       if (mx < left || mx > right) continue;
 
+      const sel =
+        env.selection !== null &&
+        env.selection.trackId === track.id &&
+        env.selection.lineIndex === lineIndex &&
+        env.selection.sylIndex === sylIndex;
+
+      // Selection highlight: a soft band across the marker's lane + bolder
+      // marker/label, so the Del target is unmistakable.
+      if (sel) {
+        ctx.fillStyle = 'rgba(255,225,77,0.16)';
+        ctx.fillRect(mx - 12, laneY, 24, ROW_H);
+      }
+
       // syllable text label
-      ctx.fillStyle = '#7a7f9e';
-      ctx.font = '11px system-ui';
+      ctx.fillStyle = sel ? '#ffe14d' : '#7a7f9e';
+      ctx.font = (sel ? 'bold ' : '') + '11px system-ui';
       ctx.textBaseline = 'middle';
       const label = syl.text.trim();
       if (label) ctx.fillText(label.slice(0, 10), mx + 5, laneY + ROW_H / 2);
 
       // marker handle — thin 1px line spanning its lane
       ctx.fillStyle = '#ffe14d';
-      ctx.fillRect(mx, laneY, 1, ROW_H);
+      ctx.fillRect(mx, laneY, sel ? 2 : 1, ROW_H);
     }
 
     // Separator in the row's LAST pixel — same convention as audioView: the

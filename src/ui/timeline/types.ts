@@ -19,6 +19,17 @@ export type Ctx = CanvasRenderingContext2D;
 export type AudioTool = 'automation' | 'edit';
 
 /**
+ * A syllable marker selected on the timeline (click). The selected marker is
+ * highlighted and can be deleted with Del/Backspace (removed together with
+ * its timing, no positional re-flow of the others).
+ */
+export interface SyllableSelection {
+  trackId: string;
+  lineIndex: number;
+  sylIndex: number;
+}
+
+/**
  * Everything a track view needs to draw / hit-test one frame, independent of
  * the concrete track kind. Provided by the orchestrator per draw / pointer
  * event. The coordinate functions already account for the current zoom.
@@ -50,6 +61,8 @@ export interface TimelineEnv {
   dropTargetTrackId: string | null;
   /** The currently claimed drag, if any (views draw source highlights). */
   drag: TrackDrag | null;
+  /** The selected syllable marker (click), or null. Views highlight it. */
+  selection: SyllableSelection | null;
 }
 
 /** A drag a track view claimed via hitTest — carried across pointermove. */
