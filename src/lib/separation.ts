@@ -26,6 +26,7 @@
  * a Web Worker move is a future optimization.
  */
 import { encodeWav } from './wavEncoder';
+import { detectBackingVocals } from './backDetect';
 import { stft, istft } from './stft';
 
 /**
@@ -158,10 +159,15 @@ export function isSeparationAvailable(): boolean {
 
 /** Separated stems, each WAV PCM 16-bit stereo bytes ready to load into a role. */
 export interface SeparationResult {
-  /** The LEAD vocal stem (phase 2 output; on models without phase 2 = all vocals). */
+  /** The LEAD vocal stem: the phase-2 output, or — when no backing vocals were
+   *  detected — the FULL phase-1 vocal stem (nothing carved out of it). */
   lead: Uint8Array;
-  /** The backing-vocals stem (vocal stem − lead). */
-  back: Uint8Array;
+  /**
+   * The backing-vocals stem (vocal stem − lead), or NULL when the detector
+   * decided the "back" is just quiet leakage of the lead (the song has no
+   * backing vocals): no back stem is produced and `lead` carries everything.
+   */
+  back: Uint8Array | null;
   /** The instrumental stem (normalized mix − vocal stem, peak-normalized). */
   instrumental: Uint8Array;
 }
@@ -223,6 +229,19 @@ export async function separateFull(
     instL[i] = mixL[i] - vocRawL[i];
     instR[i] = mixR[i] - vocRawR[i];
   }
+
+  // No-backing-vocals detection: when the "back" stem is just quiet leakage of
+  // the lead, don't carve it out — the lead becomes the FULL phase-1 vocal
+  // stem (leaked fragments stay in it) and no back stem is emitted at all.
+  const verdict = detectBackingVocals(leadRawL, backL, SAMPLE_RATE);
+  if (!verdict.backVocals) {
+    return {
+      lead: encodeWav(vocL, vocR, SAMPLE_RATE),
+      back: null,
+      instrumental: encodeWav(normalizePeak(instL, 0.9), normalizePeak(instR, 0.9), SAMPLE_RATE),
+    };
+  }
+
   return {
     lead: encodeWav(normalizePeak(leadRawL, 0.9), normalizePeak(leadRawR, 0.9), SAMPLE_RATE),
     back: encodeWav(normalizePeak(backL, 0.9), normalizePeak(backR, 0.9), SAMPLE_RATE),

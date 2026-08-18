@@ -316,9 +316,12 @@ async function buildKaraoke(
         });
         const base = payload.original.name.replace(/\.[^.]+$/, '');
         await loadAudioBytesIntoRole('lead', lead, `${base} (лид).wav`);
-        await loadAudioBytesIntoRole('back', back, `${base} (бэк).wav`);
+        // back === null → no backing vocals detected (quiet lead leakage only):
+        // the lead already carries the full vocal, the slot stays empty.
+        if (back) await loadAudioBytesIntoRole('back', back, `${base} (бэк).wav`);
         await loadAudioBytesIntoRole('minus', instrumental, `${base} (минус).wav`);
         dialog.close();
+        if (!back) toast('Бэк-вокал не обнаружен — дорожка бэка оставлена пустой', 'info');
       } catch (err) {
         dialog.error(err instanceof Error ? err.message : String(err));
         return;
