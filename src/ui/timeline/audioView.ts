@@ -62,6 +62,15 @@ export const audioView: TrackView<AudioTrack> = {
       ctx.textAlign = 'center';
       ctx.fillText('загрузите аудио', env.width / 2, midY);
       ctx.textAlign = 'left';
+    } else {
+      // Filename in the model but no decoded buffer — e.g. a restored
+      // autosave whose media didn't survive: point at the re-load path.
+      ctx.fillStyle = '#5a5f7e';
+      ctx.font = '11px system-ui';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      ctx.fillText('аудио не загружено — клик по шапке дорожки', env.width / 2, midY);
+      ctx.textAlign = 'left';
     }
     // Separator line under the row (only the visible slice). Drawn in the LAST
     // pixel INSIDE the row (h-1): the gutter's header card is a bordered box of

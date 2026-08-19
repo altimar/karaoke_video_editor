@@ -11,6 +11,7 @@
 import { store } from '../../state/store';
 import { Track, AudioTrack, TextTrack, createTextTrack } from '../../types';
 import { clearAudioRole, getAudioBytesMap } from '../../lib/audioLoader';
+import { audioEngine } from '../../lib/audioEngine';
 import { clearBgVideo } from '../../lib/backgroundVideo';
 import { invalidateBgImageCache } from '../../lib/render';
 import { rowHeight, TRACK_PAD, BG_ROW_H } from './coords';
@@ -170,7 +171,9 @@ export function createGutterRenderer(
         // leave background mode — the user explicitly picked a track.
         gutterEl.querySelector('.timeline-track-head.bg')?.classList.remove('active');
         cb.onTrackSelected?.();
-        if (track.type === 'audio' && !track.audioFileName) {
+        // Re-load path for both an empty slot and a restored model whose
+        // media bytes didn't survive (filename set, buffer missing).
+        if (track.type === 'audio' && (!track.audioFileName || !audioEngine.has(track.role))) {
           actions.openAudioPicker(track);
         }
       });
