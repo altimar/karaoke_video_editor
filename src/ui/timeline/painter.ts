@@ -35,6 +35,8 @@ export interface PainterDeps {
   contentWidth: () => number;
   viewportWidth: () => number;
   msToX: (ms: number) => number;
+  /** Content-space x → ms (the ruler hover tooltip reads the pointer time). */
+  xToMs: (x: number) => number;
   playheadMs: () => number;
   /** Recording state for the "next syllable" pill beside the playhead. */
   recording: () => { active: boolean; cursor: number };
@@ -102,6 +104,27 @@ export function createPainter(deps: PainterDeps): { draw(): void; scheduleDraw()
 
     // One row per track — delegate drawing to its view.
     const env = deps.makeEnv();
+    // Ruler hover: a time bubble right under the cursor (pre-click feedback
+    // for seeking). Content-space pointer → screen-space x, clamped in view.
+    if (env.pointer && env.pointer.y <= RULER_H) {
+      const ms = Math.max(0, Math.min(deps.durationMs(), deps.xToMs(env.pointer.x)));
+      const label = fmtTimePrecise(ms);
+      const tw = ctx.measureText(label).width;
+      const bw = tw + 12;
+      const bh = 16;
+      const sx = env.pointer.x - scroll.scrollLeft;
+      const bx = Math.max(2, Math.min(vw - bw - 2, sx - bw / 2));
+      ctx.fillStyle = '#232639';
+      ctx.strokeStyle = '#3a3f5a';
+      ctx.lineWidth = 1;
+      roundRect(ctx, bx, RULER_H + 3, bw, bh, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#e6e8f5';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(label, bx + 6, RULER_H + 3 + bh / 2 + 0.5);
+    }
+
     const activeId = env.activeTrackId;
     for (let ti = 0; ti < tracks.length; ti++) {
       const track = tracks[ti];
@@ -249,6 +272,14 @@ export function createPainter(deps: PainterDeps): { draw(): void; scheduleDraw()
     ctx.arcTo(x, y + h, x, y, rr);
     ctx.arcTo(x, y, x + w, y, rr);
     ctx.closePath();
+  }
+
+  /** m:ss.d — the ruler hover bubble (a bit more precise than tick labels). */
+  function fmtTimePrecise(ms: number): string {
+    const t = Math.floor(ms / 100);
+    const s = Math.floor(t / 10);
+    const m = Math.floor(s / 60);
+    return `${m}:${(s % 60).toString().padStart(2, '0')}.${t % 10}`;
   }
 
   function fmtTime(ms: number): string {

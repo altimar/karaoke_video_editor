@@ -20,6 +20,7 @@ import {
 } from '../../lib/textParser';
 import { Project, Track } from '../../types';
 import { setFilmstripOnReady } from '../../lib/bgThumbnails';
+import { setScrubTime } from '../../lib/scrub';
 import type { ToastFn } from '../controls';
 import { trackTopForIndex, trackIndexAtY, isBgRowAtY } from './coords';
 import { AudioTool, SyllableSelection, TimelineEnv, TrackDrag, TrackView, selectionBounds } from './types';
@@ -96,22 +97,31 @@ export function createTimeline(
   head.appendChild(toolControls);
 
   // Zoom controls (always visible; on desktop Shift+wheel still works too).
+  // 100% == the whole song fits the viewport exactly, so "fit" is the label
+  // itself (clickable) plus an explicit ⤢ button.
   const zoomControls = document.createElement('div');
   zoomControls.className = 'tl-zoom-controls';
   const zoomOutBtn = document.createElement('button');
   zoomOutBtn.className = 'tl-zoom-btn';
   zoomOutBtn.textContent = '➖';
   zoomOutBtn.title = 'Уменьшить';
-  const zoomLabel = document.createElement('span');
+  const zoomLabel = document.createElement('button');
   zoomLabel.className = 'tl-zoom-label';
   zoomLabel.textContent = '100%';
+  zoomLabel.title = 'Показать всю песню (100%)';
   const zoomInBtn = document.createElement('button');
   zoomInBtn.className = 'tl-zoom-btn';
   zoomInBtn.textContent = '➕';
   zoomInBtn.title = 'Увеличить';
+  const zoomFitBtn = document.createElement('button');
+  zoomFitBtn.className = 'tl-zoom-btn';
+  zoomFitBtn.textContent = '⤢';
+  zoomFitBtn.title = 'Показать всю песню';
+  zoomFitBtn.dataset.testid = 'tl-zoom-fit';
   zoomControls.appendChild(zoomOutBtn);
   zoomControls.appendChild(zoomLabel);
   zoomControls.appendChild(zoomInBtn);
+  zoomControls.appendChild(zoomFitBtn);
   head.appendChild(zoomControls);
   root.appendChild(head);
 
@@ -222,7 +232,9 @@ export function createTimeline(
       while (next >= 0 && next < flat.length && flat[next].syl.startMs === null) next += dir;
       if (next >= 0 && next < flat.length) {
         selection = { trackId: sel.trackId, anchorFlat: next, focusFlat: next };
-        ensureSyllableVisible(flat[next].syl.startMs ?? 0);
+        const ms = flat[next].syl.startMs ?? 0;
+        ensureSyllableVisible(ms);
+        setScrubTime(ms);
       }
       return;
     }
@@ -240,6 +252,7 @@ export function createTimeline(
             if (syl) syl.startMs = Math.round(ms);
           }
         });
+        setScrubTime(ms);
       } else {
         const bounds = rangeShiftBounds(flat, b0, b1, durationMs());
         const delta = Math.round(Math.max(bounds.lo, Math.min(bounds.hi, step)));
@@ -254,6 +267,7 @@ export function createTimeline(
             }
           });
           ensureSyllableVisible((flat[b0]?.syl.startMs ?? 0) + delta);
+          setScrubTime((flat[b0]?.syl.startMs ?? 0) + delta);
         }
       }
       return;
@@ -326,6 +340,9 @@ export function createTimeline(
   }
   zoomInBtn.addEventListener('click', () => zoomCentered(1.15));
   zoomOutBtn.addEventListener('click', () => zoomCentered(1 / 1.15));
+  const fitZoom = (): void => zoomCentered(1 / zoom);
+  zoomLabel.addEventListener('click', fitZoom);
+  zoomFitBtn.addEventListener('click', fitZoom);
 
   // The active drag (claimed by some track view's hitTest), carried across moves.
   let drag: TrackDrag | null = null;
@@ -642,6 +659,7 @@ export function createTimeline(
     contentWidth,
     viewportWidth,
     msToX,
+    xToMs,
     playheadMs: () => playheadMs,
     recording: () => ({ active: recording, cursor: recordCursor }),
   });

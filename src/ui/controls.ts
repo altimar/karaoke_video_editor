@@ -75,6 +75,9 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
   });
   root.appendChild(recBtn);
 
+  // Visual grouping: transport | project | output.
+  root.appendChild(topbarSep());
+
   // --- Open (single button, auto-detect format by extension) ---
   // One file picker accepts both .karaokeproject and .kfn; the handler tells
   // them apart by extension and routes to the right importer.
@@ -180,6 +183,7 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
   // --- Export (single button → tabbed dialog: Video / Project / KaraFun) ---
   const exportBtn = document.createElement('button');
   exportBtn.className = 'primary';
+  root.appendChild(topbarSep());
   setTopbarButton(exportBtn, '⬇', 'Экспорт');
   exportBtn.title = 'Экспорт: видео (MP4) / проект / KaraFun (.kfn)';
   exportBtn.dataset.testid = 'btn-export';
@@ -328,6 +332,13 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
  * separator on desktop; it collapses (trailing whitespace) when the label is
  * hidden, so the icon stays snug.
  */
+/** Thin vertical separator between topbar button groups. */
+function topbarSep(): HTMLElement {
+  const sep = document.createElement('span');
+  sep.className = 'topbar-sep';
+  return sep;
+}
+
 function setTopbarButton(btn: HTMLButtonElement, icon: string, label: string): void {
   const lbl = document.createElement('span');
   lbl.className = 'topbar-btn-label';

@@ -12,6 +12,7 @@ import { renderFrame } from '../lib/render';
 import { bgVideoEl } from '../lib/backgroundVideo';
 import { timingCapture } from '../lib/timing';
 import { flatSyllables } from '../lib/textParser';
+import { getScrubTime } from '../lib/scrub';
 import { getActiveTextTrack } from '../types';
 
 /**
@@ -85,7 +86,9 @@ export function createPreview(): { wrap: HTMLElement; dispose: () => void } {
     syncSize();
     // While recording, keep showing live time so the user sees fills land as they tap.
     const playing = audioEngine.isPlaying;
-    const timeMs = playing ? audioEngine.currentTimeMs : lastTimeMs;
+    // Timeline scrubbing (marker drag / arrow nudge / Tab) overrides the
+    // paused playhead frame; playback always wins.
+    const timeMs = playing ? audioEngine.currentTimeMs : (getScrubTime() ?? lastTimeMs);
     // The background video (when bgType === 'video') is the live frame source.
     if (p.background.bgType === 'video') {
       syncBgVideo(timeMs, playing);

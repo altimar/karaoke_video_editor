@@ -14,6 +14,7 @@ import { canExport } from './lib/export';
 import { peekBgFilmstrip } from './lib/bgThumbnails';
 import { setAlignmentModel } from './lib/forcedAlign';
 import { resolveAlignModelOverride } from './lib/alignment/models';
+import { getScrubTime } from './lib/scrub';
 import { initAutosave } from './lib/autosave';
 import { store } from './state/store';
 import { audioEngine } from './lib/audioEngine';
@@ -145,12 +146,14 @@ function main(): void {
     __audioEngine: typeof audioEngine;
     __bgFilmstrip: typeof peekBgFilmstrip;
     __setAlignModelFull: (preset: 'en' | 'multi' | null, url?: string, cacheName?: string) => void;
+    __scrub: typeof getScrubTime;
   };
   hooks.__store = store;
   hooks.__audioEngine = audioEngine;
   hooks.__bgFilmstrip = peekBgFilmstrip;
   hooks.__setAlignModelFull = (preset, url, cacheName) =>
     setAlignmentModel(preset ? resolveAlignModelOverride(preset, url, cacheName) : null);
+  hooks.__scrub = getScrubTime;
 }
 
 function helpCard(): HTMLElement {

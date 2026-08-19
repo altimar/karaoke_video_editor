@@ -8,6 +8,7 @@
  */
 import { store } from '../../state/store';
 import { flatSyllables, clampBetweenNeighbors, rangeShiftBounds, timingProblems } from '../../lib/textParser';
+import { setScrubTime } from '../../lib/scrub';
 import { TextTrack } from '../../types';
 import { ROW_H, TEXT_ROW_H_ACTIVE } from './coords';
 import { Ctx, TimelineEnv, TrackDrag, TrackView, selectionBounds } from './types';
@@ -155,6 +156,8 @@ export const textView: TrackView<TextTrack> = {
           if (orig !== null && f[i]) f[i].syl.startMs = Math.round(orig + delta);
         }
       });
+      // Show the dragged moment in the preview (scrub overrides the paused playhead).
+      setScrubTime((base as number) + delta);
       return;
     }
 
@@ -171,6 +174,7 @@ export const textView: TrackView<TextTrack> = {
         if (syl) syl.startMs = Math.round(ms);
       }
     });
+    setScrubTime(ms);
   },
 };
 
