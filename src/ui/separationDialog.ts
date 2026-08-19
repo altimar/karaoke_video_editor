@@ -20,8 +20,12 @@ export interface SeparationDialog {
   setStatus: (message: string) => void;
   /** Close the dialog on success. */
   close: () => void;
-  /** Show an error message in place of the progress bar, then let the user dismiss. */
-  error: (message: string) => void;
+  /**
+   * Show a failure: a human-readable headline, the raw technical text under a
+   * collapsible «Подробности», and an optional action button (e.g. «switch to
+   * the light model and retry»).
+   */
+  error: (message: string, opts?: { detail?: string; action?: { label: string; onClick: () => void } }) => void;
 }
 
 export function openSeparationDialog(titleText = 'Извлечение минуса'): SeparationDialog {
@@ -151,13 +155,40 @@ export function openSeparationDialog(titleText = 'Извлечение мину�
     remove();
   };
 
-  const error = (message: string): void => {
+  const error = (
+    message: string,
+    opts?: { detail?: string; action?: { label: string; onClick: () => void } },
+  ): void => {
     done = true;
     status.textContent = 'Ошибка: ' + message;
     status.style.color = 'var(--danger)';
     downloadWrap.hidden = true;
     progressWrap.hidden = true;
     closeBtn.title = 'Закрыть';
+    // The raw technical text, collapsed by default — enough for a bug report,
+    // not in the way of the human explanation.
+    if (opts?.detail && opts.detail !== message) {
+      const details = document.createElement('details');
+      details.className = 'error-details';
+      const summary = document.createElement('summary');
+      summary.textContent = 'Подробности';
+      const pre = document.createElement('pre');
+      pre.textContent = opts.detail;
+      details.appendChild(summary);
+      details.appendChild(pre);
+      body.appendChild(details);
+    }
+    if (opts?.action) {
+      const btn = document.createElement('button');
+      btn.className = 'primary';
+      btn.style.marginTop = '10px';
+      btn.textContent = opts.action.label;
+      btn.addEventListener('click', () => {
+        remove();
+        opts.action!.onClick();
+      });
+      body.appendChild(btn);
+    }
   };
 
   return { setDownload, setProgress, setStatus, close, error };

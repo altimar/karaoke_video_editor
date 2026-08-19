@@ -70,6 +70,7 @@ src/
     bgThumbnails.ts        — фильмстрип видео-фона для таймлайна (офлайн-декод WebCodecs)
     timing.ts              — контроллер съёмки таймингов активной дорожки (Space → startMs, курсор от плейхеда)
     autosave.ts            — crash-recovery: снапшоты модели в IndexedDB + бар восстановления при старте
+    settings.ts            — глобальные настройки приложения (localStorage): вариант karaoke-модели
     forcedAlign.ts         — авторасстановка таймингов: wav2vec2 CTC forced alignment (модель, чанковый инференс)
     alignment/ctc.ts       — чистая математика выравнивания: токенизация, CTC Viterbi, распределение слогов
     textParser.ts          — парсер текста, сериализация, mergeTimings, flatSyllables
@@ -98,6 +99,8 @@ src/
     preview.ts             — canvas-превью с RAF-циклом (+ синхронизация видео-фона с аудио)
     timeline/              — таймлайн (модульный): оркестратор (index), painter (рендер canvas), gutter (шапки), actions (файловые потоки/сепарация/выравнивание) + стратегии дорожек (textView, audioView)
     stylePanel.ts          — панель: per-track (шрифт/цвета/обводка/раскладка) + project (фон/FPS/разрешение)
+    settingsDialog.ts      — диалог ⚙ Настройки (глобальные: вариант karaoke-модели)
+    separationError.ts     — человеко-читаемые ошибки сепарации + кнопка «облегчённая модель»
     exportDialog.ts        — модальный диалог экспорта (выбор качества, прогресс)
 tests/                     — юнит-тесты (Vitest: fake-ctx рендер, round-trip'ы, jsdom)
 e2e/                       — E2E-тесты (Playwright: файлы, экспорт, видео-фон)

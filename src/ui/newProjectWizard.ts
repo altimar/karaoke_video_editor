@@ -30,6 +30,7 @@ import { separateFull, getSeparationStatus } from '../lib/separation';
 import { clearBgVideo } from '../lib/backgroundVideo';
 import { invalidateBgImageCache } from '../lib/render';
 import { openSeparationDialog } from './separationDialog';
+import { reportSeparationError } from './separationError';
 import type { ToastFn } from './controls';
 
 /** Stems a user may provide directly (the original is handled separately). */
@@ -323,7 +324,7 @@ async function buildKaraoke(
         dialog.close();
         if (!back) toast('Бэк-вокал не обнаружен — дорожка бэка оставлена пустой', 'info');
       } catch (err) {
-        dialog.error(err instanceof Error ? err.message : String(err));
+        reportSeparationError(dialog, err, toast);
         return;
       }
     } else {

@@ -21,6 +21,7 @@ import { separateFull, getSeparationStatus } from '../../lib/separation';
 import { autoAlignTimings, getAlignmentStatus } from '../../lib/forcedAlign';
 import { openVocalBindDialog } from '../vocalBindDialog';
 import { openSeparationDialog } from '../separationDialog';
+import { reportSeparationError } from '../separationError';
 import type { ToastFn } from '../controls';
 import { applyBgFile } from '../bgFile';
 
@@ -121,8 +122,8 @@ export function createTimelineActions(toast: ToastFn): TimelineActions {
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      dialog.error(msg);
-      toast('Не удалось извлечь вокал: ' + msg, 'err');
+      reportSeparationError(dialog, err, toast);
+      toast('Не удалось извлечь вокал: ' + msg.split('\n')[0], 'err');
     }
   }
 
@@ -182,8 +183,8 @@ export function createTimelineActions(toast: ToastFn): TimelineActions {
       toast(`Готово: расставлено ${starts.length} слогов`, 'ok');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      dialog.error(msg);
-      toast('Авторасстановка не удалась: ' + msg, 'err');
+      dialog.error(msg.split('\n')[0].slice(0, 160), { detail: msg });
+      toast('Авторасстановка не удалась: ' + msg.split('\n')[0], 'err');
     }
   }
 

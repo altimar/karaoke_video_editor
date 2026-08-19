@@ -30,6 +30,7 @@
  */
 import { encodeWav } from './wavEncoder';
 import { detectBackingVocals } from './backDetect';
+import { getSettings } from './settings';
 import { stft, istft } from './stft';
 
 /**
@@ -89,11 +90,16 @@ const VOCALS_MODEL: ModelConfig = {
  * eval/fix-karaoke-onnx.mjs graph surgery (Einsum→MatMul/Mul, wide Split→binary
  * trees): the stock export builds shaders with 11+ storage buffers and hits
  * WebGPU's per-stage limit of 10. Hosted at our HF mirror
- * (Project42/mel-band-roformer-karaoke-webgpu).
+ * (Project42/mel-band-roformer-karaoke-webgpu) in two variants:
+ *  - fp32 `model.onnx` (~876 MB) — the original surgery output;
+ *  - fp16 `model_fp16.onnx` (~440 MB) — float16 conversion of the same graph,
+ *    for weaker GPUs (halves VRAM + faster kernels). Selected in ⚙ Настройки
+ *    (lib/settings.ts, browser-global) — see humanizeSeparationError for the
+ *    device-lost flow that suggests the light variant.
  *
  * Emits ONE mask (the lead vocal); the backing stem = vocal input − lead.
  */
-const KARAOKE_MODEL: ModelConfig = {
+const KARAOKE_MODEL_FP32: ModelConfig = {
   graphUrl:
     'https://huggingface.co/Project42/mel-band-roformer-karaoke-webgpu/resolve/main/model.onnx',
   cacheName: 'karaoke-model-v1',
@@ -102,6 +108,44 @@ const KARAOKE_MODEL: ModelConfig = {
   // 60 mel bands × 8 attention heads × 4 B fp32 per frame² (see ModelConfig).
   attentionBytesPerFrameSq: 60 * 8 * 4,
 };
+
+const KARAOKE_MODEL_FP16: ModelConfig = {
+  graphUrl:
+    'https://huggingface.co/Project42/mel-band-roformer-karaoke-webgpu/resolve/main/model_fp16.onnx',
+  cacheName: 'karaoke-model-fp16-v1',
+  inputLayout: 'frames-major',
+  maskLayout: 'stem',
+  // Same attention, half the bytes: fp16 scores (2 B per element).
+  attentionBytesPerFrameSq: 60 * 8 * 2,
+};
+
+/** The phase-2 model variant chosen in the app settings (default: fp32). */
+function karaokeModel(): ModelConfig {
+  return getSettings().karaokeModel === 'fp16' ? KARAOKE_MODEL_FP16 : KARAOKE_MODEL_FP32;
+}
+
+/**
+ * Humanize a separation failure for the error dialog: known GPU failure
+ * patterns get an actionable Russian explanation; anything else returns null
+ * (the caller shows the raw message). The raw text always goes under the
+ * collapsible «подробности» either way.
+ */
+export function humanizeSeparationError(raw: string): string | null {
+  const s = raw.toLowerCase();
+  if (s.includes('is lost') || s.includes('devicelost') || s.includes('device lost')) {
+    return 'GPU-устройство сброшено (драйвер/перегрузка видеокарты). Что попробовать: обновить страницу и запустить извлечение заново; закрыть приложения и вкладки, нагружающие видеокарту; обновить драйвер. На картах с 4 ГБ памяти обычно помогает облегчённая модель (⚙ Настройки).';
+  }
+  if (s.includes('invalid buffer') || s.includes('mapasync') || s.includes('map_async')) {
+    return 'Браузеру не удалось получить результат вычислений с GPU (проблема совместимости WebGPU в этом браузере). Что попробовать: Chrome или Edge, обновить страницу. Также помогает облегчённая модель (⚙ Настройки).';
+  }
+  if (s.includes('out of memory') || s.includes('allocation failed')) {
+    return 'Не хватило видеопамяти на видеокарте. Закройте приложения, нагружающие GPU, и попробуйте снова — или переключитесь на облегчённую модель (⚙ Настройки).';
+  }
+  if (s.includes('не удалось скачать') || s.includes('failed to fetch') || s.includes('download')) {
+    return 'Не удалось скачать модель — проверьте подключение к интернету и попробуйте ещё раз.';
+  }
+  return null;
+}
 
 // --- Mel-RoFormer parameters (from the musetric model definition) ---
 /** FFT size. */
@@ -240,7 +284,7 @@ export interface SeparationResult {
  * FULL two-phase separation, one button:
  *
  *   phase 1 (VOCALS_MODEL):  original → vocal mask → instrumental = mix − vocals
- *   phase 2 (KARAOKE_MODEL): vocal stem → lead mask → back = vocals − lead
+ *   phase 2 (karaoke variant): vocal stem → lead mask → back = vocals − lead
  *
  * The two model sessions are NEVER alive at the same time (each holds
  * ~0.7–0.9 GB of weights) — phase 1's session is released before phase 2's is
@@ -275,9 +319,10 @@ export async function separateFull(
   cb.onStatus?.('Этап 2 из 2: лид и бэк…');
   const vocL = normalizePeak(vocRawL, 0.9);
   const vocR = normalizePeak(vocRawR, 0.9);
-  const session2 = await acquireSession(KARAOKE_MODEL, cb.onDownload);
+  const karaoke = karaokeModel();
+  const session2 = await acquireSession(karaoke, cb.onDownload);
   const { rawL: leadRawL, rawR: leadRawR } = await runMaskModel(
-    KARAOKE_MODEL, session2, ort, vocL, vocR,
+    karaoke, session2, ort, vocL, vocR,
     (frac) => cb.onProgress?.(0.5 + frac * 0.5),
   );
 

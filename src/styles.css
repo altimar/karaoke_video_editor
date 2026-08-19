@@ -760,6 +760,54 @@ textarea.lyrics {
   padding: 5px 10px;
   font-size: 12px;
 }
+/* Settings dialog: option cards (radio pair) for the model variant. */
+.settings-option-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.settings-option {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  text-align: left;
+}
+.settings-option-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.settings-option-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.settings-option.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Collapsible technical details under a humanized error headline. */
+.error-details {
+  margin-top: 10px;
+  font-size: 12px;
+}
+.error-details summary {
+  cursor: pointer;
+  color: var(--text-dim);
+}
+.error-details pre {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 11px;
+}
 .toast.err {
   border-color: var(--danger);
   color: var(--danger);

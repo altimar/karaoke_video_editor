@@ -15,6 +15,7 @@ import { getAudioBytesMap, setAudioBytesMap } from '../lib/audioLoader';
 import { loadBgVideo, clearBgVideo, getBgVideoBytes } from '../lib/backgroundVideo';
 import { openExportDialog } from './exportDialog';
 import { openMetadataDialog } from './metadataDialog';
+import { openSettingsDialog } from './settingsDialog';
 import { songBaseName } from '../lib/songTitle';
 import { AudioRole, getAudioTrackByRole, getActiveTextTrack, isRoleAudible, ProjectMetadata } from '../types';
 
@@ -156,6 +157,14 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
     });
   });
   root.appendChild(metaBtn);
+
+  // --- App settings (global, browser-persisted: separation model variant…) ---
+  const settingsBtn = document.createElement('button');
+  setTopbarButton(settingsBtn, '⚙', 'Настройки');
+  settingsBtn.title = 'Настройки приложения (общие для всех проектов)';
+  settingsBtn.dataset.testid = 'btn-settings';
+  settingsBtn.addEventListener('click', () => openSettingsDialog());
+  root.appendChild(settingsBtn);
 
   // --- New project (wizard: audio → lyrics → auto separation + align) ---
   if (onNewProject) {
