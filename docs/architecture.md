@@ -68,7 +68,8 @@ src/
     audioEdit.ts           — перенос фраз между ролями: PCM-хирургия + перезагрузка ролей через audioLoader
     backgroundVideo.ts     — видео-фон: байты вне модели + скрытый <video> для превью
     bgThumbnails.ts        — фильмстрип видео-фона для таймлайна (офлайн-декод WebCodecs)
-    timing.ts              — контроллер съёмки таймингов активной дорожки (Space → startMs)
+    timing.ts              — контроллер съёмки таймингов активной дорожки (Space → startMs, курсор от плейхеда)
+    autosave.ts            — crash-recovery: снапшоты модели в IndexedDB + бар восстановления при старте
     forcedAlign.ts         — авторасстановка таймингов: wav2vec2 CTC forced alignment (модель, чанковый инференс)
     alignment/ctc.ts       — чистая математика выравнивания: токенизация, CTC Viterbi, распределение слогов
     textParser.ts          — парсер текста, сериализация, mergeTimings, flatSyllables

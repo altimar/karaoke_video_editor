@@ -14,6 +14,7 @@ import { canExport } from './lib/export';
 import { peekBgFilmstrip } from './lib/bgThumbnails';
 import { setAlignmentModel } from './lib/forcedAlign';
 import { resolveAlignModelOverride } from './lib/alignment/models';
+import { initAutosave } from './lib/autosave';
 import { store } from './state/store';
 import { audioEngine } from './lib/audioEngine';
 import { getAudioTracks } from './types';
@@ -32,6 +33,9 @@ function toast(msg: string, kind: 'ok' | 'err' | 'info' = 'info'): void {
 
 function main(): void {
   const app = document.getElementById('app')!;
+
+  // Crash-recovery snapshots (IndexedDB) + the startup restore bar.
+  initAutosave();
 
   // Topbar
   // The wizard needs the timeline's auto-align runner; the timeline is created

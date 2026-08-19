@@ -740,6 +740,26 @@ textarea.lyrics {
   z-index: 50;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
 }
+/* Crash-recovery restore bar (lib/autosave.ts), shown once on startup. */
+.autosave-bar {
+  position: fixed;
+  right: 14px;
+  bottom: 240px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  z-index: 50;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+.autosave-bar button {
+  padding: 5px 10px;
+  font-size: 12px;
+}
 .toast.err {
   border-color: var(--danger);
   color: var(--danger);
