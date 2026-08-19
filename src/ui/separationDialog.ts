@@ -1,3 +1,4 @@
+import { createEta } from '../lib/eta';
 /**
  * Separation progress modal.
  *
@@ -72,9 +73,12 @@ export function openSeparationDialog(titleText = 'Извлечение мину�
   const downloadPct = document.createElement('div');
   downloadPct.className = 'progress-pct';
   downloadPct.textContent = '0%';
+  const downloadEta = document.createElement('span');
+  downloadEta.className = 'progress-eta';
   downloadWrap.appendChild(downloadLabel);
   downloadWrap.appendChild(downloadBar);
   downloadWrap.appendChild(downloadPct);
+  downloadWrap.appendChild(downloadEta);
   body.appendChild(downloadWrap);
 
   const progressWrap = document.createElement('div');
@@ -90,9 +94,12 @@ export function openSeparationDialog(titleText = 'Извлечение мину�
   const pct = document.createElement('div');
   pct.className = 'progress-pct';
   pct.textContent = '0%';
+  const progressEta = document.createElement('span');
+  progressEta.className = 'progress-eta';
   progressWrap.appendChild(progressLabel);
   progressWrap.appendChild(bar);
   progressWrap.appendChild(pct);
+  progressWrap.appendChild(progressEta);
   body.appendChild(progressWrap);
 
   modal.appendChild(body);
@@ -125,18 +132,24 @@ export function openSeparationDialog(titleText = 'Извлечение мину�
   };
   window.addEventListener('keydown', onKey);
 
+  // ETA: recomputed from a sliding window on every update — follows speed
+  // changes and resets per phase (fraction jumps back = new download/inference).
+  const downloadEtaEst = createEta();
   const setDownload = (fraction: number | null): void => {
     downloadWrap.hidden = false;
     if (fraction === null) {
       downloadFill.style.width = '100%';
       downloadPct.textContent = '…';
+      downloadEta.textContent = '';
       return;
     }
     const f = Math.max(0, Math.min(1, fraction));
     downloadFill.style.width = `${Math.round(f * 100)}%`;
     downloadPct.textContent = `${Math.round(f * 100)}%`;
+    downloadEta.textContent = f > 0.02 ? `осталось ${downloadEtaEst.update(f) ?? '…'}` : '';
   };
 
+  const progressEtaEst = createEta();
   const setProgress = (fraction: number): void => {
     // Once inference starts, the download phase is done — collapse it.
     downloadWrap.hidden = true;
@@ -144,6 +157,7 @@ export function openSeparationDialog(titleText = 'Извлечение мину�
     const f = Math.max(0, Math.min(1, fraction));
     fill.style.width = `${Math.round(f * 100)}%`;
     pct.textContent = `${Math.round(f * 100)}%`;
+    progressEta.textContent = f > 0.02 ? `осталось ${progressEtaEst.update(f) ?? '…'}` : '';
   };
 
   const setStatus = (message: string): void => {
@@ -164,6 +178,8 @@ export function openSeparationDialog(titleText = 'Извлечение мину�
     status.style.color = 'var(--danger)';
     downloadWrap.hidden = true;
     progressWrap.hidden = true;
+    downloadEta.textContent = '';
+    progressEta.textContent = '';
     closeBtn.title = 'Закрыть';
     // The raw technical text, collapsed by default — enough for a bug report,
     // not in the way of the human explanation.

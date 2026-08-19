@@ -72,6 +72,7 @@ src/
     timing.ts              — контроллер съёмки таймингов активной дорожки (Space → startMs, курсор от плейхеда)
     autosave.ts            — crash-recovery: снапшоты модели в IndexedDB + бар восстановления при старте
     settings.ts            — глобальные настройки приложения (localStorage): вариант karaoke-модели
+    eta.ts                 — оценка «осталось ~X» для прогресс-баров (скользящее окно, сброс по фазам)
     forcedAlign.ts         — авторасстановка таймингов: wav2vec2 CTC forced alignment (модель, чанковый инференс)
     alignment/ctc.ts       — чистая математика выравнивания: токенизация, CTC Viterbi, распределение слогов
     textParser.ts          — парсер текста, сериализация, mergeTimings, flatSyllables
