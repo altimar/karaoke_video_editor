@@ -96,8 +96,13 @@ function drawBackground(
     ctx.fillStyle = bg.bgType === 'image' && bgImg ? '#000' : bg.bgColor;
   }
   ctx.fillRect(0, 0, width, height);
+  // The image/video layer draws with its own opacity — the color/gradient
+  // base underneath shows through (dimmed busy backgrounds read better).
+  const layerAlpha = Math.max(0.05, Math.min(1, bg.bgOpacity ?? 1));
+  if (layerAlpha < 1) ctx.globalAlpha = layerAlpha;
   if (bg.bgType === 'image' && bgImg) drawBgImage(ctx, bgImg, width, height, bg.bgFit ?? 'cover');
   if (bg.bgType === 'video' && bgVideoFrame) drawBgImage(ctx, bgVideoFrame, width, height, bg.bgFit ?? 'cover');
+  if (layerAlpha < 1) ctx.globalAlpha = 1;
 }
 
 // Cache decoded background images by data URL to avoid re-decoding each frame.

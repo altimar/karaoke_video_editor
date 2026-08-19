@@ -294,6 +294,12 @@ function buildEffectSection(track: TextTrack, effIndex: number, textTrackIndex: 
  * most two text effects, so more than two tracks produce a warning (they are
  * still written as additional effects, at the user's own risk).
  */
+/** The bgOpacity (0.05..1) as the #RRGGBBAA alpha byte (white × alpha). */
+function alphaHex(opacity: number | undefined): string {
+  const a = Math.round(Math.max(0.05, Math.min(1, opacity ?? 1)) * 255);
+  return a.toString(16).padStart(2, '0').toUpperCase();
+}
+
 function buildSongIni(
   tracks: TextTrack[],
   audioFileName: string,
@@ -302,6 +308,7 @@ function buildSongIni(
   leadAudioFileName: string | null,
   backAudioFileName: string | null,
   metadata: ProjectMetadata,
+  bgOpacity: number,
 ): { ini: string; warnings: string[] } {
   const warnings: string[] = [];
   const lines: string[] = [];
@@ -360,7 +367,8 @@ function buildSongIni(
     lines.push('Locked=0');
     lines.push('Color=#000000');
     lines.push(`LibImage=${bgImageFileName}`);
-    lines.push('ImageColor=#FFFFFFFF');
+    // White × alpha = the layer's brightness (bgOpacity); FF = as-is.
+    lines.push(`ImageColor=#FFFFFF${alphaHex(bgOpacity)}`);
     lines.push('AlphaBlending=Opacity');
     lines.push('OffsetX=0');
     lines.push('OffsetY=0');
@@ -386,7 +394,7 @@ function buildSongIni(
     lines.push('LoopVideo=0');
     lines.push('DisplayLastFrame=0');
     lines.push('ZoomScale=100');
-    lines.push('Filter=#FFFFFFFF');
+    lines.push(`Filter=#FFFFFF${alphaHex(bgOpacity)}`);
     lines.push('AlphaBlending=Opacity');
     lines.push('OffsetX=0');
     lines.push('OffsetY=0');
@@ -568,6 +576,7 @@ export async function exportToKfn(
     textTracks, minusEntry.filename, bgImageFileName, bgVideoFileName,
     leadEntry?.filename ?? null, backEntry?.filename ?? null,
     metadata,
+    project.background.bgOpacity,
   );
   const songIniBytes = new TextEncoder().encode(songIni);
   report(0.5);

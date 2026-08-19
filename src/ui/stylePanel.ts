@@ -585,6 +585,20 @@ export function createStylePanel(toast: ToastFn = () => {}): { root: HTMLElement
       );
       projFields.push({ get: (p) => p.background.bgFit ?? 'cover', field: fitSel as Field<unknown> });
       bgCardEl.appendChild(fitSel.root);
+
+      // Dim busy backgrounds so the lyrics read better (the color layer
+      // shows through). One line: label | slider | value.
+      const opacity = numberField(
+        'Яркость фона',
+        Math.round((bg.bgOpacity ?? 1) * 100),
+        5,
+        100,
+        1,
+        (v) => mutateBg((x) => (x.bgOpacity = v / 100)),
+      );
+      (opacity.root.querySelector('input') as HTMLInputElement).dataset.testid = 'input-bg-opacity';
+      projFields.push({ get: (p) => Math.round((p.background.bgOpacity ?? 1) * 100), field: opacity as Field<unknown> });
+      bgCardEl.appendChild(opacity.root);
     }
 
     if (bg.bgType === 'color') {

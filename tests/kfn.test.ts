@@ -326,6 +326,28 @@ test('background image round-trip (ID=51 effect + type=3 container file)', async
   assert(bg.bgImageDataUrl === `data:image/png;base64,${RED_PNG_B64}`, 'imported background data URL matches');
 });
 
+test('background opacity round-trips through the ImageColor alpha byte', async () => {
+  const p = JSON.parse(JSON.stringify(makeProject()));
+  const RED_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  p.background = {
+    bgType: 'image', bgColor: '#000', bgColors: ['#000', '#111'],
+    bgImageDataUrl: `data:image/png;base64,${RED_PNG_B64}`, bgOpacity: 0.4,
+  };
+  const r = await exportToKfn(p, fakeAudioMap);
+  const insp = await inspect(r.blob);
+  const eff1 = insp.songIni.split('[Eff2]')[0];
+  // 0.4 × 255 = 102 = 0x66 → ImageColor=#FFFFFF66.
+  assert(/ImageColor=#FFFFFF66/.test(eff1), `alpha byte written (got ${/ImageColor=.+/.exec(eff1)?.[0]})`);
+  const imported = importFromKfn(new Uint8Array(await r.blob.arrayBuffer()));
+  const bg = imported.project.background as any;
+  assert(Math.abs(bg.bgOpacity - 0.4) < 0.01, `imported bgOpacity ≈ 0.4 (got ${bg.bgOpacity})`);
+  // Full opacity keeps the exact historical value (no regression for old files).
+  p.background.bgOpacity = 1;
+  const r2 = await exportToKfn(p, fakeAudioMap);
+  const insp2 = await inspect(r2.blob);
+  assert(/ImageColor=#FFFFFFFF/.test(insp2.songIni), 'full opacity writes FF as before');
+});
+
 test('no background → no image entry, no ID=51 effect', async () => {
   const r = await exportToKfn(makeProject(), fakeAudioMap);
   const insp = await inspect(r.blob);

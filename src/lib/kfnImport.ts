@@ -129,12 +129,20 @@ function parseEffects(songIni: string): EffectFields[] {
 function extractBackground(songIni: string, entries: KfnEntry[], data: Uint8Array): Background | null {
   // Find an ID=51 effect and its LibImage reference.
   let libImage: string | null = null;
+  let bgOpacity = 1;
   let current: { name: string; fields: Map<string, string> } | null = null;
   const isEffect = (name: string): boolean => /^Eff\d+$/.test(name);
   const flush = (): void => {
     if (!current || !isEffect(current.name)) return;
     const id = parseInt(current.fields.get('ID') ?? '0', 10);
-    if (id === 51) libImage = (current.fields.get('LibImage') ?? '').trim() || null;
+    if (id === 51) {
+      libImage = (current.fields.get('LibImage') ?? '').trim() || null;
+      // #RRGGBBAA: the alpha byte carries the background brightness
+      // (white × alpha). RGB tinting isn't supported — alpha only.
+      const c = (current.fields.get('ImageColor') ?? '').trim();
+      const a = c.match(/^#[0-9A-Fa-f]{8}$/)?.[0].slice(7, 9);
+      if (a) bgOpacity = parseInt(a, 16) / 255;
+    }
   };
   for (const rawLine of songIni.split(/\r?\n/)) {
     const secMatch = rawLine.match(/^\[(\w+)\]\s*$/);
@@ -165,6 +173,7 @@ function extractBackground(songIni: string, entries: KfnEntry[], data: Uint8Arra
   const bg = createBackground();
   bg.bgType = 'image';
   bg.bgImageDataUrl = dataUrl;
+  bg.bgOpacity = Math.max(0.05, Math.min(1, bgOpacity));
   return bg;
 }
 

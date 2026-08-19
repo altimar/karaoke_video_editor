@@ -86,6 +86,13 @@ export interface Background {
   bgVideoFileName: string | null;
   /** How image/video backgrounds fill the canvas. Defaults to 'cover'. */
   bgFit: BgFit;
+  /**
+   * Image/video layer opacity (0.05..1): below 1 the color/gradient layer
+   * shows through — dimming busy backgrounds so lyrics read better.
+   * Defaults to 1; KFN round-trips it as the alpha byte of
+   * ImageColor/Filter (white × alpha).
+   */
+  bgOpacity: number;
 }
 
 /**
@@ -239,6 +246,7 @@ export function createBackground(): Background {
     bgImageDataUrl: null,
     bgVideoFileName: null,
     bgFit: 'cover',
+    bgOpacity: 1,
   };
 }
 
