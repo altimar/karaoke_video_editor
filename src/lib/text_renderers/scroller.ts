@@ -78,9 +78,16 @@ export const scrollerRenderer: TextRenderer = {
     ctx.clip();
 
     const margin = style.fontSize * 2; // off-screen cull margin (shared with the bar)
+    // Whole-pixel scroll on a COMMON lattice. cy = (centerY + v·anchor) − v·t:
+    // rounding each line's cy INDEPENDENTLY makes lines step on different
+    // frames (relative distances wobble ±1 px — "one line moved, the other
+    // caught up later"). Rounding the shared scroll term keeps every line on
+    // the same stepping clock with CONSTANT integer distances between lines,
+    // while each baseline stays on a stable integer pixel.
+    const scroll = Math.round(v * timeMs);
     for (const a of anchored) {
       // Position: line is at center at its anchor time, then rises at speed v.
-      const cy = centerY - v * (timeMs - a.startMs);
+      const cy = Math.round(centerY + v * a.startMs) - scroll;
       // Skip lines well outside the screen.
       if (cy < -margin || cy > height + margin) continue;
 

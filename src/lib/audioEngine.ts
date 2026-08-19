@@ -46,6 +46,14 @@ class AudioEngine {
   private primaryRole: AudioRole | null = null;
   /** Playback rate (0.25..2, pitch preserved) — timing capture on fast songs. */
   private rate = 1;
+  /**
+   * Smooth playback clock origin. HTMLMediaElement.currentTime advances in
+   * coarse steps (~20–40 ms in Chrome), so per-RAF consumers (the preview
+   * scroller, the timeline playhead) visibly stutter when reading it raw.
+   * We extrapolate with performance.now() × rate and gently correct toward
+   * the real clock (hard resync on drift > 40 ms — seeks/loops).
+   */
+  private clock = { wall: 0, audioMs: 0 };
 
   private audioStateListeners = new Set<AudioStateListener>();
   private timeListeners = new Set<TimeListener>();
@@ -88,6 +96,7 @@ class AudioEngine {
     v.audio.src = v.url;
     v.audio.load();
     v.audio.playbackRate = this.rate;
+    this.resetClock();
     const arrBuf = (bytes.buffer as ArrayBuffer).slice(0);
     v.buffer = await ctx.decodeAudioData(arrBuf.slice(0));
     // Apply any automation already set on this voice (× mute/solo factor).
@@ -113,6 +122,12 @@ class AudioEngine {
     return this.voices.get(role)?.buffer ?? null;
   }
 
+  /** Re-anchor the smooth clock at the current (real) audio position. */
+  private resetClock(): void {
+    const v = this.primaryVoice();
+    this.clock = { wall: performance.now(), audioMs: v ? (v.audio.currentTime || 0) * 1000 : 0 };
+  }
+
   /** True if a role has audio loaded. */
   has(role: AudioRole): boolean {
     return !!this.voices.get(role)?.buffer;
@@ -129,6 +144,7 @@ class AudioEngine {
     for (const v of this.voices.values()) {
       v.audio.playbackRate = this.rate;
     }
+    this.resetClock();
   }
 
   /** Store a role's volume-automation envelope; gain is applied per RAF tick. */
@@ -200,7 +216,25 @@ class AudioEngine {
 
   get currentTimeMs(): number {
     const v = this.primaryVoice();
-    return v ? (v.audio.currentTime || 0) * 1000 : 0;
+    if (!v) return 0;
+    const raw = (v.audio.currentTime || 0) * 1000;
+    if (!this.isPlaying) {
+      // Paused/scrubbing: the raw clock is exact and already smooth enough.
+      this.clock = { wall: performance.now(), audioMs: raw };
+      return raw;
+    }
+    const est = this.clock.audioMs + (performance.now() - this.clock.wall) * this.rate;
+    const err = raw - est;
+    if (Math.abs(err) > 40) {
+      // Seek/loop/clock slip — snap to the real position.
+      this.clock = { wall: performance.now(), audioMs: raw };
+      return raw;
+    }
+    // Gentle correction keeps the extrapolation from drifting while staying
+    // smooth (5% of the error per read).
+    const corrected = est + err * 0.05;
+    this.clock = { wall: performance.now(), audioMs: corrected };
+    return corrected;
   }
 
   get durationMs(): number {
@@ -256,6 +290,7 @@ class AudioEngine {
         }
       }),
     );
+    this.resetClock();
     this.startTimeLoop();
   }
 
@@ -287,6 +322,7 @@ class AudioEngine {
 
   seek(timeMs: number): void {
     const t = Math.max(0, timeMs / 1000);
+    this.clock = { wall: performance.now(), audioMs: Math.max(0, timeMs) };
     // Seek every loaded voice so any subset can resume from here.
     for (const v of this.voices.values()) {
       if (v.buffer) v.audio.currentTime = t;
