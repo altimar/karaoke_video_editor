@@ -3,7 +3,7 @@
  * and the timing validator (overlaps / out-of-duration).
  */
 import { test } from 'vitest';
-import { flatSyllables, clampBetweenNeighbors, rangeShiftBounds, removeTimingsAndShift, timingProblems } from '../src/lib/textParser';
+import { flatSyllables, clampBetweenNeighbors, rangeShiftBounds, removeTimingsAndShift, timingProblems, syllableCharOffset, serializeLyrics } from '../src/lib/textParser';
 import { Line } from '../src/types';
 
 const assert = (cond: unknown, msg: string): void => {
@@ -82,4 +82,40 @@ test('timingProblems: marks the later syllable of overlaps and beyond-duration s
   assert(bad2.size === 1 && bad2.has(0), 'beyond-duration syllable marked');
   // Clean timing → empty.
   assert(timingProblems(LINES, 10000).size === 0, 'monotonic in-duration timing is clean');
+});
+
+test('syllableCharOffset matches serializeLyrics positions', () => {
+  const lines = makeLines([
+    [['при', 0], ['вет', 500]],      // "привет"
+    [['мир', 900], ['и', 1000], ['я', 1100]], // "мир и я"
+  ]);
+  // makeLines uses ' ' seps → rendered: "при вет\nмир и я".
+  const text = serializeLyrics(lines);
+  const expectAt = (li: number, si: number, sylText: string): void => {
+    const off = syllableCharOffset(lines, li, si);
+    assert(text.startsWith(sylText, off), `offset ${off} should point at "${sylText}" in "${JSON.stringify(text)}"`);
+  };
+  expectAt(0, 0, 'при');
+  expectAt(0, 1, 'вет'); // after a space sep
+  expectAt(1, 0, 'мир'); // line start (after the newline)
+  expectAt(1, 1, 'и');   // after a space sep
+  expectAt(1, 2, 'я');
+  // Every non-slash sep renders as one space char (sep '' only opens a line).
+  const gapLines = [{ syllables: [
+    { text: 'при', startMs: 0, sep: '' },
+    { text: 'вет', startMs: 5, sep: ' ' },
+  ] }];
+  assert(serializeLyrics(gapLines) === 'при вет', 'space sep renders as one gap');
+  assert(syllableCharOffset(gapLines, 0, 1) === 4, `offset after a space sep, got ${syllableCharOffset(gapLines, 0, 1)}`);
+  // Slash seps count as one char.
+  const slashed: Array<Array<[string, number | null]>> = [[['а', 0], ['б', 1], ['в', 2]]];
+  const slashedLines = [{ syllables: [
+    { text: 'а', startMs: 0, sep: '' },
+    { text: 'б', startMs: 1, sep: '/' },
+    { text: 'в', startMs: 2, sep: '/' },
+  ] }];
+  const slashedText = serializeLyrics(slashedLines);
+  assert(slashedText === 'а/б/в', `slash rendering, got ${JSON.stringify(slashedText)}`);
+  assert(syllableCharOffset(slashedLines, 0, 1) === 2, `slash sep offset, got ${syllableCharOffset(slashedLines, 0, 1)}`);
+  void slashed;
 });

@@ -13,7 +13,8 @@
  * auto-syllabification and timing capture all operate on the ACTIVE track.
  */
 import { store } from '../state/store';
-import { parseLyrics, serializeLyrics, mergeTimings } from '../lib/textParser';
+import { parseLyrics, serializeLyrics, mergeTimings, syllableCharOffset } from '../lib/textParser';
+import { onSyllableFocus } from '../lib/syllableFocus';
 import { syllabifyText } from '../lib/syllabification';
 import { getActiveTextTrack } from '../types';
 
@@ -56,7 +57,17 @@ export function createLyricsEditor(): { root: HTMLElement } {
       track.lines = newLines;
     });
   });
-  card.appendChild(ta);
+  // The textarea paints its selection ONLY while focused — for the parked
+  // marker selection we draw our own highlight layer over it (positioned by
+  // measuring the text in a mirror div, see highlightSyllable below).
+  const taWrap = document.createElement('div');
+  taWrap.className = 'lyrics-wrap';
+  const hlLayer = document.createElement('div');
+  hlLayer.className = 'lyrics-hl';
+  hlLayer.dataset.testid = 'lyrics-highlight';
+  taWrap.appendChild(ta);
+  taWrap.appendChild(hlLayer);
+  card.appendChild(taWrap);
 
   // Auto-syllabify button: detects language and splits words into syllables
   // with '/' directly in the textarea text.
@@ -101,6 +112,89 @@ export function createLyricsEditor(): { root: HTMLElement } {
       if (fresh !== ta.value) ta.value = fresh;
     }
   });
+
+  // Timeline → editor: selecting a syllable marker highlights that syllable's
+  // text and scrolls it into view (only when the selected track IS the one
+  // this textarea edits — the ACTIVE text track). No focus stealing: the
+  // timeline keeps its keyboard (arrows/Del/Tab); the parked selection waits
+  // for the user to click into the editor (typing then replaces the syllable).
+  onSyllableFocus((f) => {
+    const activeText = getActiveTextTrack(store.getProject());
+    if (!activeText || activeText.id !== f.trackId) return;
+    const off = syllableCharOffset(activeText.lines, f.lineIndex, f.sylIndex);
+    const syl = activeText.lines[f.lineIndex]?.syllables[f.sylIndex];
+    if (!syl || off > ta.value.length) return;
+    ta.setSelectionRange(off, off + syl.text.length);
+    // Center the caret's logical line (soft wrap makes this approximate —
+    // good enough for lyrics-sized lines).
+    const line = ta.value.slice(0, off).split('\n').length - 1;
+    const lh = parseFloat(getComputedStyle(ta).lineHeight) || 16;
+    ta.scrollTop = Math.max(0, line * lh - ta.clientHeight / 2);
+    drawHighlight(off, off + syl.text.length);
+  });
+
+  // --- The visible-without-focus highlight layer ---
+  // A hidden mirror div with the textarea's exact typography renders the
+  // text; a <span> at [off, end) yields client rects which we replay as
+  // absolutely-positioned boxes over the textarea (scroll-compensated).
+  const mirror = document.createElement('div');
+  mirror.style.visibility = 'hidden';
+  mirror.style.position = 'absolute';
+  mirror.style.zIndex = '-1';
+  mirror.style.whiteSpace = 'pre-wrap';
+  mirror.style.overflowWrap = 'break-word';
+  let baseRects: DOMRect[] = [];
+
+  function drawHighlight(off: number, end: number): void {
+    const cs = getComputedStyle(ta);
+    for (const prop of ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'padding', 'border', 'boxSizing', 'tabSize'] as const) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (mirror.style as any)[prop] = (cs as any)[prop];
+    }
+    mirror.style.width = `${ta.clientWidth}px`;
+    mirror.textContent = '';
+    mirror.append(ta.value.slice(0, off));
+    const span = document.createElement('span');
+    span.textContent = ta.value.slice(off, end);
+    mirror.append(span);
+    mirror.append(ta.value.slice(end));
+    document.body.appendChild(mirror);
+    try {
+      const mRect = mirror.getBoundingClientRect();
+      const tRect = ta.getBoundingClientRect(); // styling parity only
+      void tRect;
+      // Offsets within the mirror's border box == offsets within the
+      // textarea's border box (identical box styles); stored UNscrolled.
+      baseRects = [...span.getClientRects()].map(
+        (r) => new DOMRect(r.left - mRect.left, r.top - mRect.top, r.width, r.height),
+      );
+    } finally {
+      mirror.remove();
+    }
+    renderRects();
+  }
+
+  function renderRects(): void {
+    hlLayer.innerHTML = '';
+    for (const r of baseRects) {
+      const box = document.createElement('div');
+      box.style.left = `${r.left}px`;
+      box.style.top = `${r.top - ta.scrollTop}px`;
+      box.style.width = `${Math.max(2, r.width)}px`;
+      box.style.height = `${r.height}px`;
+      hlLayer.appendChild(box);
+    }
+  }
+
+  function clearHighlight(): void {
+    baseRects = [];
+    hlLayer.innerHTML = '';
+  }
+
+  // Keep the layer honest: follow the textarea's scroll, drop on edits.
+  ta.addEventListener('scroll', renderRects);
+  ta.addEventListener('input', clearHighlight);
+  window.addEventListener('resize', () => (baseRects.length ? renderRects() : undefined));
 
   return { root };
 }

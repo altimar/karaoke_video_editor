@@ -774,6 +774,62 @@ textarea.lyrics {
   padding: 5px 10px;
   font-size: 12px;
 }
+/* Player transport: the strip under the preview (play / record / speed). */
+.player-transport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 0 2px;
+}
+.transport-btn {
+  width: 40px;
+  height: 36px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  line-height: 1;
+  border-radius: 8px;
+}
+.transport-btn.rec.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.speed-group {
+  display: flex;
+  gap: 4px;
+}
+.speed-btn {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
+  font-family: "SF Mono", "Consolas", monospace;
+  color: var(--text-dim);
+}
+.speed-btn.active {
+  background: #232639;
+  border-color: #3a3f5a;
+  color: var(--accent);
+}
+
+/* Lyrics editor: visible-without-focus syllable highlight (mirror-measured). */
+.lyrics-wrap {
+  position: relative;
+}
+.lyrics-hl {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.lyrics-hl div {
+  position: absolute;
+  background: rgba(255, 225, 77, 0.3);
+  border: 1px solid rgba(255, 225, 77, 0.45);
+  border-radius: 2px;
+}
+
 /* Settings dialog: option cards (radio pair) for the model variant. */
 .settings-option-row {
   display: flex;

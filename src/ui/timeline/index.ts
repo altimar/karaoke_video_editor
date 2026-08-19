@@ -21,6 +21,7 @@ import {
 import { Project, Track } from '../../types';
 import { setFilmstripOnReady } from '../../lib/bgThumbnails';
 import { setScrubTime } from '../../lib/scrub';
+import { focusSyllable } from '../../lib/syllableFocus';
 import type { ToastFn } from '../controls';
 import { trackTopForIndex, trackIndexAtY, isBgRowAtY } from './coords';
 import { AudioTool, SyllableSelection, TimelineEnv, TrackDrag, TrackView, selectionBounds } from './types';
@@ -232,9 +233,11 @@ export function createTimeline(
       while (next >= 0 && next < flat.length && flat[next].syl.startMs === null) next += dir;
       if (next >= 0 && next < flat.length) {
         selection = { trackId: sel.trackId, anchorFlat: next, focusFlat: next };
-        const ms = flat[next].syl.startMs ?? 0;
+        const f = flat[next];
+        const ms = f.syl.startMs ?? 0;
         ensureSyllableVisible(ms);
         setScrubTime(ms);
+        focusSyllable({ trackId: sel.trackId, lineIndex: f.lineIndex, sylIndex: f.sylIndex });
       }
       return;
     }
@@ -390,6 +393,9 @@ export function createTimeline(
             (f) => f.lineIndex === hit.lineIndex && f.sylIndex === hit.sylIndex,
           );
           if (flatIdx >= 0) {
+            // Tell the lyrics editor to park its caret at this syllable.
+            const f = flatSyllables(track.lines)[flatIdx];
+            if (f) focusSyllable({ trackId: track.id, lineIndex: f.lineIndex, sylIndex: f.sylIndex });
             const inPrevRange =
               prevSelection !== null &&
               prevSelection.trackId === track.id &&

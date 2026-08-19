@@ -75,6 +75,33 @@ export function serializeLyrics(lines: Line[]): string {
     .join('\n');
 }
 
+/**
+ * Character offset of a syllable's text start in the serializeLyrics output —
+ * used to place the lyrics textarea caret when a marker is selected on the
+ * timeline. Mirrors serializeLyrics exactly: seps render as one char, the
+ * line-leading space is trimmed.
+ */
+export function syllableCharOffset(lines: Line[], lineIndex: number, sylIndex: number): number {
+  let off = 0;
+  // Rendered length of a line — the exact serializeLyrics expression, so the
+  // two can never drift apart.
+  const lineLen = (l: Line): number =>
+    l.syllables.map((s) => `${s.sep === '/' ? '/' : ' '}${s.text}`).join('').trimStart().length;
+  for (let i = 0; i < lineIndex && i < lines.length; i++) off += lineLen(lines[i]) + 1; // + newline
+  const line = lines[lineIndex];
+  if (!line) return off;
+  for (let j = 0; j < sylIndex && j < line.syllables.length; j++) {
+    const s = line.syllables[j];
+    // j === 0: its leading sep-space is trimmed away by the line render.
+    off += s.text.length + (s.sep === '/' ? 1 : j === 0 ? 0 : 1);
+  }
+  // The syllable's OWN sep renders right before its text (not trimmed unless
+  // it opens the line).
+  const cur = line.syllables[sylIndex];
+  if (cur && sylIndex > 0 && (cur.sep === ' ' || cur.sep === '/')) off += 1;
+  return off;
+}
+
 /** Flatten all syllables across lines into one ordered list (used by timing capture & timeline). */
 export function flatSyllables(lines: Line[]): { lineIndex: number; sylIndex: number; syl: Syllable }[] {
   const out: { lineIndex: number; sylIndex: number; syl: Syllable }[] = [];
