@@ -2,7 +2,7 @@
  * Standalone tests for the lyrics parser (text <-> model) and timing helpers.
  */
 import { test } from 'vitest';
-import { parseLyrics, serializeLyrics, flatSyllables, nextUntimedIndex, mergeTimings, removeSyllableAt } from '../src/lib/textParser';
+import { parseLyrics, serializeLyrics, flatSyllables, nextUntimedIndex, mergeTimings } from '../src/lib/textParser';
 
 /** Throw on failure — Vitest reports the message as the assertion error. */
 const assert = (cond: unknown, msg: string): void => {
@@ -217,35 +217,3 @@ test('mergeTimings: split at end of a line, carry crosses into the NEXT line', (
   assert(newLines[1].syllables[2].startMs === null, 'cross-line: devastation (last) untimed');
 });
 
-// --- removeSyllableAt (timeline Del on a selected marker) ---
-
-test('removeSyllableAt: removes the syllable with its timing, others keep theirs', () => {
-  const lines = makeLines([
-    [['ла', 0], ['ла', 500], ['ла', 900]],
-    [['ди', 1500]],
-  ]);
-  const next = removeSyllableAt(lines, 0, 1);
-  assert(next.length === 2, 'both lines remain');
-  const flat = next.flatMap((l) => l.syllables);
-  assert(flat.length === 3, 'one syllable gone');
-  assert(flat[0].startMs === 0 && flat[1].startMs === 900 && flat[2].startMs === 1500,
-    'neighbors keep their EXACT timings (no positional re-flow)');
-  // Immutability: the input is untouched.
-  assert(lines[0].syllables.length === 3, 'input not mutated');
-});
-
-test('removeSyllableAt: a line left empty is removed entirely', () => {
-  const lines = makeLines([
-    [['ку', 0], ['плюс', 400]],
-    [['воды', 900]],
-  ]);
-  const next = removeSyllableAt(lines, 1, 0);
-  assert(next.length === 1, 'emptied line dropped');
-  assert(next[0].syllables.length === 2 && next[0].syllables[1].startMs === 400, 'other line intact');
-});
-
-test('removeSyllableAt: invalid indices return the input unchanged', () => {
-  const lines = makeLines([[['ла', 0]]]);
-  assert(removeSyllableAt(lines, 5, 0) === lines, 'bad line index');
-  assert(removeSyllableAt(lines, 0, 5) === lines, 'bad syllable index');
-});

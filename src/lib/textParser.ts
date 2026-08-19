@@ -125,12 +125,123 @@ export function mergeTimings(oldLines: Line[], newLines: Line[]): void {
  * removed entirely. Returns a NEW lines array (inputs untouched); invalid
  * indices return the input unchanged.
  */
-export function removeSyllableAt(lines: Line[], lineIndex: number, sylIndex: number): Line[] {
-  const line = lines[lineIndex];
-  if (!line || !line.syllables[sylIndex]) return lines;
-  const syllables = line.syllables.slice();
-  syllables.splice(sylIndex, 1);
-  const next = lines.map((l, i) => (i === lineIndex ? { syllables } : l));
-  if (syllables.length === 0) next.splice(lineIndex, 1);
+/**
+ * Del on a timeline selection: remove the selected syllables' TIMINGS (the
+ * markers) and shift the following timings back by the removed count — the
+ * positional effect of deleting those syllables from the TEXT, but the text
+ * itself stays intact. This is the "accidental extra Space during recording"
+ * repair: the timings were one ahead of the lyrics from that point; deleting
+ * a marker pulls the tail back into alignment. The vacated positions at the
+ * end become untimed. Returns a NEW lines array (inputs untouched).
+ */
+export function removeTimingsAndShift(lines: Line[], fromFlat: number, toFlat: number): Line[] {
+  const flat = flatSyllables(lines);
+  const count = Math.max(1, toFlat - fromFlat + 1);
+  const starts = flat.map((f) => f.syl.startMs);
+  starts.splice(Math.max(0, fromFlat), count);
+  while (starts.length < flat.length) starts.push(null);
+  // Write back through the same flat ordering, into copied lines/syllables.
+  const next = lines.map((l) => ({ syllables: l.syllables.map((s) => ({ ...s })) }));
+  let idx = 0;
+  for (const line of next) {
+    for (const syl of line.syllables) {
+      syl.startMs = starts[idx++] ?? null;
+    }
+  }
   return next;
+}
+
+// --- Timing-edit helpers (timeline keyboard / block edits) ---
+// All operate on the FLAT syllable view (flatSyllables) and honor the timeline
+// invariant: a timed syllable stays between its nearest TIMED neighbors.
+
+/** Clamp a candidate startMs for flat[idx] between the nearest timed
+ *  neighbors in the same track (and [0, durationMs]). */
+export function clampBetweenNeighbors(
+  flat: ReturnType<typeof flatSyllables>,
+  idx: number,
+  ms: number,
+  durationMs: number,
+): number {
+  let min = 0;
+  let max = durationMs;
+  for (let i = idx - 1; i >= 0; i--) {
+    const v = flat[i]?.syl.startMs;
+    if (v !== null && v !== undefined) {
+      min = v;
+      break;
+    }
+  }
+  for (let i = idx + 1; i < flat.length; i++) {
+    const v = flat[i]?.syl.startMs;
+    if (v !== null && v !== undefined) {
+      max = v;
+      break;
+    }
+  }
+  return Math.max(min, Math.min(max, ms));
+}
+
+/**
+ * Allowed [lo, hi] shift (ms) for moving the timed syllables of flat[from..to]
+ * as a block: the earliest must not cross its left neighbor, the latest must
+ * not cross its right neighbor, and everything stays within [0, durationMs].
+ * Untimed syllables inside the range don't move (nothing to move).
+ */
+export function rangeShiftBounds(
+  flat: ReturnType<typeof flatSyllables>,
+  from: number,
+  to: number,
+  durationMs: number,
+): { lo: number; hi: number } {
+  let minStart = Infinity;
+  let maxStart = -Infinity;
+  for (let i = from; i <= to; i++) {
+    const ms = flat[i]?.syl.startMs;
+    if (ms === null || ms === undefined) continue;
+    if (ms < minStart) minStart = ms;
+    if (ms > maxStart) maxStart = ms;
+  }
+  if (minStart === Infinity) return { lo: 0, hi: 0 }; // nothing timed — no-op
+  let lo = -minStart; // global left wall
+  let hi = durationMs - maxStart; // global right wall
+  for (let i = from - 1; i >= 0; i--) {
+    const v = flat[i]?.syl.startMs;
+    if (v !== null && v !== undefined) {
+      lo = Math.max(lo, v - minStart);
+      break;
+    }
+  }
+  for (let i = to + 1; i < flat.length; i++) {
+    const v = flat[i]?.syl.startMs;
+    if (v !== null && v !== undefined) {
+      hi = Math.min(hi, v - maxStart);
+      break;
+    }
+  }
+  return { lo, hi };
+}
+
+/**
+ * Validator: flat indices of TIMED syllables whose start is not strictly after
+ * the previous timed syllable (zero/negative duration — an overlap), or lies
+ * beyond the song duration. The LATER syllable of a bad pair is marked. Used
+ * by the timeline to paint problem markers red.
+ */
+export function timingProblems(
+  lines: Line[],
+  durationMs: number,
+): Set<number> {
+  const flat = flatSyllables(lines);
+  const bad = new Set<number>();
+  let prevTimed = -1;
+  for (let i = 0; i < flat.length; i++) {
+    const ms = flat[i]?.syl.startMs;
+    if (ms === null || ms === undefined) continue;
+    const prevMs = flat[prevTimed]?.syl.startMs;
+    if (prevTimed >= 0 && prevMs !== null && prevMs !== undefined && ms <= prevMs) bad.add(i);
+    if (ms > durationMs) bad.add(i);
+    prevTimed = i;
+  }
+  return bad;
 }

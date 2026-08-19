@@ -53,7 +53,7 @@ export function makeWavBytes(seconds, sampleRate = 22050) {
  * project.json + audio/minus.wav (level 0, like the app's own saves).
  * `wavSeconds` of audio in the minus role; the JSON's durationMs matches.
  */
-export function makeProjectZip(wavSeconds = 30) {
+export function makeProjectZip(wavSeconds = 30, syllables = [['ла', 500], ['ла', 900]]) {
   const wav = makeWavBytes(wavSeconds);
   const project = {
     durationMs: Math.round(wavSeconds * 1000),
@@ -83,7 +83,11 @@ export function makeProjectZip(wavSeconds = 30) {
           layout: 'scroller',
         },
         rendererSettings: {},
-        lines: [{ syllables: [{ text: 'ла', startMs: 500, sep: '' }, { text: 'ла', startMs: 900, sep: '' }] }],
+        lines: [
+          {
+            syllables: syllables.map(([text, startMs], i) => ({ text, startMs, sep: i === 0 ? '' : ' ' })),
+          },
+        ],
       },
       { id: 'a1', type: 'audio', name: 'Оригинал', role: 'original', audioFileName: '', volumeAutomation: [], muted: false, solo: false },
       { id: 'a2', type: 'audio', name: 'Вокал', role: 'lead', audioFileName: '', volumeAutomation: [], muted: false, solo: false },

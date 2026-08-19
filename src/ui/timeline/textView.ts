@@ -7,10 +7,10 @@
  * hands it the row position + env.
  */
 import { store } from '../../state/store';
-import { flatSyllables } from '../../lib/textParser';
+import { flatSyllables, clampBetweenNeighbors, rangeShiftBounds, timingProblems } from '../../lib/textParser';
 import { TextTrack } from '../../types';
 import { ROW_H, TEXT_ROW_H_ACTIVE } from './coords';
-import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
+import { Ctx, TimelineEnv, TrackDrag, TrackView, selectionBounds } from './types';
 
 /** Gap between the marker line and its label (px). */
 const LABEL_DX = 5;
@@ -53,13 +53,17 @@ export const textView: TrackView<TextTrack> = {
     const threeLanes = env.activeTrackId === track.id;
     const h = threeLanes ? TEXT_ROW_H_ACTIVE : ROW_H;
     const flat = flatSyllables(track.lines);
+    // Validator: syllables that break monotonic timing / exceed the duration.
+    const problems = timingProblems(track.lines, env.durationMs());
+    const selBounds =
+      env.selection !== null && env.selection.trackId === track.id ? selectionBounds(env.selection) : null;
     // Visible content window (with a little slack); skip syllables entirely
     // off-screen so we don't build gradients/labels for them every frame.
     const left = env.scrollLeft - 40;
     const right = env.scrollLeft + env.viewportWidth + 40;
     let timedIndex = 0;
     for (let i = 0; i < flat.length; i++) {
-      const { lineIndex, sylIndex, syl } = flat[i];
+      const { syl } = flat[i];
       if (syl.startMs === null) continue;
       const lane = laneOf(timedIndex, threeLanes);
       timedIndex++;
@@ -67,31 +71,27 @@ export const textView: TrackView<TextTrack> = {
       const mx = env.msToX(syl.startMs);
       if (mx < left || mx > right) continue;
 
-      const sel =
-        env.selection !== null &&
-        env.selection.trackId === track.id &&
-        env.selection.lineIndex === lineIndex &&
-        env.selection.sylIndex === sylIndex;
-
+      const inSel = selBounds !== null && i >= selBounds[0] && i <= selBounds[1];
+      const bad = problems.has(i);
       const label = syl.text.trim().slice(0, 10);
 
       // Selection highlight: the label's own zone (line → text end + padding),
-      // so what lights up is exactly what Del will remove.
-      if (sel) {
+      // so what lights up is exactly what the keys operate on.
+      if (inSel) {
         const zone = markerZone(mx, label);
         ctx.fillStyle = 'rgba(255,225,77,0.16)';
         ctx.fillRect(zone.x0, laneY, zone.x1 - zone.x0, ROW_H);
       }
 
       // syllable text label
-      ctx.fillStyle = sel ? '#ffe14d' : '#7a7f9e';
-      ctx.font = (sel ? 'bold ' : '') + '11px system-ui';
+      ctx.fillStyle = bad ? '#ff5c6c' : inSel ? '#ffe14d' : '#7a7f9e';
+      ctx.font = (inSel ? 'bold ' : '') + '11px system-ui';
       ctx.textBaseline = 'middle';
       if (label) ctx.fillText(label, mx + LABEL_DX, laneY + ROW_H / 2);
 
       // marker handle — thin 1px line spanning its lane
-      ctx.fillStyle = '#ffe14d';
-      ctx.fillRect(mx, laneY, sel ? 2 : 1, ROW_H);
+      ctx.fillStyle = bad ? '#ff5c6c' : '#ffe14d';
+      ctx.fillRect(mx, laneY, inSel ? 2 : 1, ROW_H);
     }
 
     // Separator in the row's LAST pixel — same convention as audioView: the
@@ -128,23 +128,39 @@ export const textView: TrackView<TextTrack> = {
     if (myFlatIdx < 0) return;
     // The marker moves WITH the pointer: where the user grabbed inside the
     // label stays under the finger, the line doesn't snap to the cursor.
-    let ms = env.xToMs(x) - drag.grabMs;
-    // Clamp: can't drag past the previous or next timed syllable WITHIN THE SAME TRACK.
-    let minMs = 0;
-    let maxMs = env.durationMs();
-    for (let i = myFlatIdx - 1; i >= 0; i--) {
-      if (flat[i].syl.startMs !== null) {
-        minMs = flat[i].syl.startMs as number;
-        break;
+    const targetMs = env.xToMs(x) - drag.grabMs;
+
+    // Block move: the grabbed marker belongs to an active multi-selection —
+    // the whole range shifts together (delta-based, originals snapshotted on
+    // the first move; bounds computed against the pre-drag layout).
+    const sb = env.selection && env.selection.trackId === track.id ? selectionBounds(env.selection) : null;
+    if (sb && sb[0] !== sb[1] && myFlatIdx >= sb[0] && myFlatIdx <= sb[1]) {
+      const [rb0, rb1] = sb;
+      if (!drag.origStarts || !drag.rangeBounds) {
+        drag.origStarts = flat.slice(rb0, rb1 + 1).map((f) => f.syl.startMs);
+        drag.rangeBounds = rangeShiftBounds(flat, rb0, rb1, env.durationMs());
       }
+      const base = drag.origStarts[myFlatIdx - rb0];
+      if (base === null) return;
+      const { lo, hi } = drag.rangeBounds;
+      const delta = Math.round(Math.max(lo, Math.min(hi, targetMs - base)));
+      const origStarts = drag.origStarts;
+      drag.moved = true;
+      store.mutate((p) => {
+        const t = p.tracks[ti];
+        if (!t || t.type !== 'text') return;
+        const f = flatSyllables(t.lines);
+        for (let i = rb0; i <= rb1; i++) {
+          const orig = origStarts[i - rb0];
+          if (orig !== null && f[i]) f[i].syl.startMs = Math.round(orig + delta);
+        }
+      });
+      return;
     }
-    for (let i = myFlatIdx + 1; i < flat.length; i++) {
-      if (flat[i].syl.startMs !== null) {
-        maxMs = flat[i].syl.startMs as number;
-        break;
-      }
-    }
-    ms = Math.max(minMs, Math.min(maxMs, ms));
+
+    // Single marker: absolute move, clamped between the previous/next TIMED
+    // syllable of the same track.
+    const ms = clampBetweenNeighbors(flat, myFlatIdx, targetMs, env.durationMs());
     drag.moved = true;
     const li = drag.lineIndex;
     const si = drag.sylIndex;

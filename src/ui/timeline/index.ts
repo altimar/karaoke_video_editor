@@ -15,12 +15,14 @@
 import { store } from '../../state/store';
 import { audioEngine } from '../../lib/audioEngine';
 import { timingCapture } from '../../lib/timing';
-import { removeSyllableAt } from '../../lib/textParser';
+import {
+  flatSyllables, removeTimingsAndShift, clampBetweenNeighbors, rangeShiftBounds,
+} from '../../lib/textParser';
 import { Project, Track } from '../../types';
 import { setFilmstripOnReady } from '../../lib/bgThumbnails';
 import type { ToastFn } from '../controls';
 import { trackTopForIndex, trackIndexAtY, isBgRowAtY } from './coords';
-import { AudioTool, SyllableSelection, TimelineEnv, TrackDrag, TrackView } from './types';
+import { AudioTool, SyllableSelection, TimelineEnv, TrackDrag, TrackView, selectionBounds } from './types';
 import { textView, pickMarker } from './textView';
 import { audioView } from './audioView';
 import { createGutterRenderer } from './gutter';
@@ -56,7 +58,7 @@ export function createTimeline(
   head.appendChild(headTitle);
   const headHint = document.createElement('span');
   headHint.className = 'hint';
-  headHint.textContent = '— клик = перемотка, маркеры тянутся; клик по слогу + Del — удалить слог';
+  headHint.textContent = '— клик = перемотка, маркеры тянутся; клик по слогу + Del — снять тайминг';
   head.appendChild(headHint);
 
   // Audio-row tool switch: volume automation vs phrase editing (drag chunks
@@ -157,41 +159,115 @@ export function createTimeline(
   // The syllable marker selected by the last click (highlighted; Del removes).
   let selection: SyllableSelection | null = null;
 
-  /** selection, or null if its syllable no longer exists (self-healing —
-   *  text edits invalidate line/syllable indices). */
+  /** selection, or null if its syllables no longer exist (self-healing —
+   *  text edits invalidate flat indices). */
   function liveSelection(): SyllableSelection | null {
     if (!selection) return null;
     const t = store.getProject().tracks.find((x) => x.id === selection!.trackId);
-    if (!t || t.type !== 'text' || !t.lines[selection.lineIndex]?.syllables[selection.sylIndex]) {
+    if (!t || t.type !== 'text') {
       selection = null;
+      return null;
+    }
+    const [a, b] = selectionBounds(selection);
+    if (a < 0 || b >= flatSyllables(t.lines).length) {
+      selection = null;
+      return null;
     }
     return selection;
   }
 
-  // Del/Backspace deletes the selected syllable (together with its timing —
-  // the OTHER timings are not re-flowed, unlike editing the lyrics text).
-  // Esc just deselects. Ignored while typing in an input/textarea.
+  /** Keep a time visible in the timeline viewport (Tab navigation, nudges). */
+  function ensureSyllableVisible(ms: number): void {
+    const x = msToX(ms);
+    const vw = scroll.clientWidth;
+    if (x < scroll.scrollLeft + 60) scroll.scrollLeft = Math.max(0, x - 80);
+    else if (x > scroll.scrollLeft + vw - 60) scroll.scrollLeft = x - vw + 80;
+    painter.scheduleDraw();
+  }
+
+  // --- Keyboard editing of the selected syllable(s) ---
+  // Arrows nudge (±50 ms, Shift = ±10 ms) — the whole range when one is
+  // selected, honoring the between-neighbors invariant. Tab/Shift+Tab walk
+  // the timed syllables. Del/Backspace removes the selected marker(s) and
+  // shifts the following timings back (the TEXT is never touched); Esc just
+  // deselects. Ignored while typing in an input/textarea.
   window.addEventListener('keydown', (e) => {
-    if (e.key !== 'Delete' && e.key !== 'Backspace' && e.key !== 'Escape') return;
+    const k = e.key;
+    const relevant =
+      k === 'Delete' || k === 'Backspace' || k === 'Escape' ||
+      k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Tab';
+    if (!relevant) return;
     const sel = liveSelection();
     if (!sel) return;
     const el = document.activeElement;
     const editable =
       el instanceof HTMLElement && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
     if (editable) return;
-    if (e.key === 'Escape') {
+    if (k === 'Escape') {
       selection = null;
       painter.scheduleDraw();
       return;
     }
+
+    const track = store.getProject().tracks.find((x) => x.id === sel.trackId);
+    if (!track || track.type !== 'text') return;
+    const flat = flatSyllables(track.lines);
+    const [b0, b1] = selectionBounds(sel);
+
+    if (k === 'Tab') {
+      e.preventDefault();
+      // Walk to the next/previous TIMED syllable (markers are all timed).
+      const dir = e.shiftKey ? -1 : 1;
+      let next = sel.focusFlat + dir;
+      while (next >= 0 && next < flat.length && flat[next].syl.startMs === null) next += dir;
+      if (next >= 0 && next < flat.length) {
+        selection = { trackId: sel.trackId, anchorFlat: next, focusFlat: next };
+        ensureSyllableVisible(flat[next].syl.startMs ?? 0);
+      }
+      return;
+    }
+
+    if (k === 'ArrowLeft' || k === 'ArrowRight') {
+      e.preventDefault();
+      const step = (e.shiftKey ? 10 : 50) * (k === 'ArrowLeft' ? -1 : 1);
+      if (b0 === b1) {
+        const cur = flat[b0].syl.startMs ?? 0;
+        const ms = clampBetweenNeighbors(flat, b0, cur + step, durationMs());
+        store.mutate((p) => {
+          const t = p.tracks.find((x) => x.id === sel.trackId);
+          if (t && t.type === 'text') {
+            const syl = flatSyllables(t.lines)[b0]?.syl;
+            if (syl) syl.startMs = Math.round(ms);
+          }
+        });
+      } else {
+        const bounds = rangeShiftBounds(flat, b0, b1, durationMs());
+        const delta = Math.round(Math.max(bounds.lo, Math.min(bounds.hi, step)));
+        if (delta !== 0) {
+          store.mutate((p) => {
+            const t = p.tracks.find((x) => x.id === sel.trackId);
+            if (!t || t.type !== 'text') return;
+            const f = flatSyllables(t.lines);
+            for (let i = b0; i <= b1; i++) {
+              const syl = f[i]?.syl;
+              if (syl && syl.startMs !== null) syl.startMs += delta;
+            }
+          });
+          ensureSyllableVisible((flat[b0]?.syl.startMs ?? 0) + delta);
+        }
+      }
+      return;
+    }
+
+    // Delete / Backspace: remove the selected marker(s) and shift the tail's
+    // timings back — the TEXT is untouched (this repairs an accidental extra
+    // Space during recording; see removeTimingsAndShift). The selection stays
+    // on the same syllable so repeated Del keeps pulling the tail back.
     e.preventDefault();
     store.mutate((p) => {
       const t = p.tracks.find((x) => x.id === sel.trackId);
-      if (t && t.type === 'text') {
-        t.lines = removeSyllableAt(t.lines, sel.lineIndex, sel.sylIndex);
-      }
+      if (t && t.type === 'text') t.lines = removeTimingsAndShift(t.lines, b0, b1);
     });
-    selection = null;
     painter.scheduleDraw();
   });
 
@@ -266,7 +342,8 @@ export function createTimeline(
     const y = e.clientY - rect.top;
     pointer = { x, y };
     // Any click re-targets the selection: it's set again right below when the
-    // click claims a syllable marker.
+    // click claims a syllable marker (Shift+click extends the PREVIOUS one).
+    const prevSelection: SyllableSelection | null = selection;
     selection = null;
     const project = store.getProject();
     const model = project.tracks;
@@ -289,9 +366,28 @@ export function createTimeline(
           : view.hitTest(track, rowY, x, y, env);
       if (hit) {
         drag = hit;
-        // Clicking a marker selects it (Del-ready); any other claim deselects.
-        if (hit.kind === 'syllable') {
-          selection = { trackId: track.id, lineIndex: hit.lineIndex, sylIndex: hit.sylIndex };
+        // Clicking a marker selects it (arrows/Del ready); Shift+click extends
+        // the selection to a RANGE (anchor kept); any other claim deselects.
+        if (hit.kind === 'syllable' && track.type === 'text') {
+          const flatIdx = flatSyllables(track.lines).findIndex(
+            (f) => f.lineIndex === hit.lineIndex && f.sylIndex === hit.sylIndex,
+          );
+          if (flatIdx >= 0) {
+            const inPrevRange =
+              prevSelection !== null &&
+              prevSelection.trackId === track.id &&
+              flatIdx >= Math.min(prevSelection.anchorFlat, prevSelection.focusFlat) &&
+              flatIdx <= Math.max(prevSelection.anchorFlat, prevSelection.focusFlat);
+            if (e.shiftKey && prevSelection && prevSelection.trackId === track.id) {
+              selection = { trackId: track.id, anchorFlat: prevSelection.anchorFlat, focusFlat: flatIdx };
+            } else if (inPrevRange) {
+              // Grabbing INSIDE a range keeps it (block drag); clicking outside
+              // replaces the selection.
+              selection = prevSelection;
+            } else {
+              selection = { trackId: track.id, anchorFlat: flatIdx, focusFlat: flatIdx };
+            }
+          }
         }
         canvas.setPointerCapture(e.pointerId);
         // A drop-capable drag starts hovering over its own row.

@@ -19,14 +19,20 @@ export type Ctx = CanvasRenderingContext2D;
 export type AudioTool = 'automation' | 'edit';
 
 /**
- * A syllable marker selected on the timeline (click). The selected marker is
- * highlighted and can be deleted with Del/Backspace (removed together with
- * its timing, no positional re-flow of the others).
+ * A syllable-marker selection on the timeline. Click sets anchor=focus (a
+ * single syllable); Shift+click extends the range (anchor stays, focus moves).
+ * Indices are FLAT positions within the track (flatSyllables order). The
+ * selected marker(s) are highlighted; arrows nudge, Tab walks, Del removes.
  */
 export interface SyllableSelection {
   trackId: string;
-  lineIndex: number;
-  sylIndex: number;
+  anchorFlat: number;
+  focusFlat: number;
+}
+
+/** Inclusive [min, max] flat-index bounds of a selection. */
+export function selectionBounds(sel: SyllableSelection): [number, number] {
+  return [Math.min(sel.anchorFlat, sel.focusFlat), Math.max(sel.anchorFlat, sel.focusFlat)];
 }
 
 /**
@@ -76,6 +82,11 @@ export type TrackDrag =
        *  pointerdown): the drag keeps this offset so the marker doesn't jump
        *  its line to the cursor when grabbed by the label letters. */
       grabMs: number;
+      /** Block-drag state (lazily snapshotted on the first move when the
+       *  grabbed syllable belongs to an active multi-selection): original
+       *  starts of the range's flat syllables + the allowed shift bounds. */
+      origStarts?: Array<number | null>;
+      rangeBounds?: { lo: number; hi: number };
       moved: boolean;
     }
   | { kind: 'volume'; trackIndex: number; timeMs: number; moved: boolean }
