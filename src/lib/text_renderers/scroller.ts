@@ -17,7 +17,7 @@
  * <param> is a multiplier of a 10-second base (param 1.0 → 10 s preview).
  */
 import { TextRenderer, RenderCtx, RenderEnv, RenderSettingValue } from './types';
-import { applyFont, drawSyllable, layoutLine, lineOriginX } from './helpers';
+import { applyFont, drawSyllable, layoutLine, lineOriginX, drawGapBar } from './helpers';
 
 /** KaraFun's Trajectory base: param = BASE / previewSec (so param 1.0 → 10 s). */
 const KFN_TRAJECTORY_BASE_SEC = 10;
@@ -50,6 +50,8 @@ export const scrollerRenderer: TextRenderer = {
   label: 'Бегущая (вылет снизу)',
   settings: [
     { key: 'previewSec', label: 'Превью вперёд, сек', kind: 'number', min: 0.62, max: 40, step: 0.01, default: 10 },
+    // Long-pause indicator: a bar filling until the next line starts (0 = off).
+    { key: 'gapBarSec', label: 'Индикатор паузы от, сек', kind: 'number', min: 0, max: 30, step: 1, default: 4 },
   ],
   render(ctx: RenderCtx, timeMs: number, env: RenderEnv, settings: Record<string, RenderSettingValue>): void {
     const { lines, style, width, height, timings, activeLineIndex } = env;
@@ -75,11 +77,11 @@ export const scrollerRenderer: TextRenderer = {
     ctx.rect(0, 0, width, height);
     ctx.clip();
 
+    const margin = style.fontSize * 2; // off-screen cull margin (shared with the bar)
     for (const a of anchored) {
       // Position: line is at center at its anchor time, then rises at speed v.
       const cy = centerY - v * (timeMs - a.startMs);
       // Skip lines well outside the screen.
-      const margin = style.fontSize * 2;
       if (cy < -margin || cy > height + margin) continue;
 
       const laid = layoutLine(ctx, timings, a.lineIndex, timeMs, activeLineIndex, style);
@@ -100,6 +102,41 @@ export const scrollerRenderer: TextRenderer = {
       ctx.restore();
     }
 
+    // Pause indicator: shown ONLY while NO line is on screen. A line is
+    // visible from (anchor − preview − ε) when it enters at the bottom to
+    // (anchor + preview + ε) when it leaves the top. The bar appears after
+    // the previous line has fully left, fills across the empty window and
+    // completes exactly when the next line ENTERS from the bottom (not when
+    // it reaches the center).
+    const gapBarSec = clampNum(settings.gapBarSec, 4, 0, 60);
+    if (gapBarSec > 0) {
+      // A line is VISIBLE (alpha > 0) during (anchor − preview, anchor + preview):
+      // it enters at the bottom exactly previewMs before its anchor and fades
+      // out at the top previewMs after it.
+      // No bar while ANY line is on screen (enter→anchor→leave spans
+      // previewMs on each side).
+      const anyVisible = anchored.some(
+        (a) => a.startMs - previewMs < timeMs && timeMs < a.startMs + previewMs,
+      );
+      // When the previous line left the top (0 before the first line).
+      let screenEmptyFrom = 0;
+      for (const a of anchored) {
+        if (a.startMs + previewMs <= timeMs) {
+          screenEmptyFrom = Math.max(screenEmptyFrom, a.startMs + previewMs);
+        }
+      }
+      // When the next line will enter from the bottom.
+      let nextEntersAt = Infinity;
+      for (const a of anchored) {
+        if (a.startMs - previewMs > timeMs) {
+          nextEntersAt = Math.min(nextEntersAt, a.startMs - previewMs);
+        }
+      }
+      const emptyWindow = nextEntersAt - screenEmptyFrom;
+      if (!anyVisible && isFinite(nextEntersAt) && emptyWindow >= gapBarSec * 1000) {
+        drawGapBar(ctx, { style, width, height }, { from: screenEmptyFrom, to: nextEntersAt }, timeMs);
+      }
+    }
     ctx.restore();
   },
 };

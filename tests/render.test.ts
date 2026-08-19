@@ -49,6 +49,11 @@ function makeFakeCtx(measure = 40) {
     beginPath: () => calls.push(['beginPath']),
     rect: (...a: any[]) => calls.push(['rect', ...a]),
     clip: () => calls.push(['clip']),
+    moveTo: (...a: any[]) => calls.push(['moveTo', ...a]),
+    arcTo: (...a: any[]) => calls.push(['arcTo', ...a]),
+    closePath: () => calls.push(['closePath']),
+    fill: () => calls.push(['fill', state.fillStyle]),
+    stroke: () => calls.push(['stroke', state.strokeStyle]),
     fillText: (text: string, x: number, y: number) => calls.push(['fillText', text, Math.round(x), Math.round(y), state.fillStyle]),
     strokeText: (text: string, x: number, y: number) => calls.push(['strokeText', text, Math.round(x), Math.round(y), state.strokeStyle]),
   };
@@ -574,4 +579,58 @@ test('applyFont: italic prefix in the canvas font string', () => {
   const ctxB: { font?: string } = {};
   applyFont(ctxB as CanvasRenderingContext2D, { ...style, italic: true });
   assert(ctxB.font === 'italic 700 64px Arial', `italic prefix: got "${ctxB.font}"`);
+});
+
+test('gap bar: shows ONLY while no line is on screen; completes at the next line\'s ENTRANCE', () => {
+  // previewSec=2: line 1's anchor is its FIRST syllable (0) → visible until
+  // 2000; line 2 (anchor 30000) enters at 28000. Empty window [2000, 28000].
+  const p = JSON.parse(JSON.stringify(project));
+  track(p).rendererSettings = { scroller: { previewSec: 2, gapBarSec: 4 } };
+  track(p).lines = [
+    { syllables: [{ text: 'А', startMs: 0 }, { text: 'Б', startMs: 1500 }] },
+    { syllables: [{ text: 'В', startMs: 30000 }] },
+  ];
+  // rect calls record [x, y, w, h]; the bar clip's height ≈ fontSize·0.5 = 32
+  // (syllable highlight clips are fontSize·2 = 128).
+  const isBar = (c: any): boolean => c[4] >= 20 && c[4] <= 45;
+
+  // While the PREVIOUS line is still on screen → no bar yet.
+  const early = makeFakeCtx(40);
+  renderFrame(early.ctx, 1500, p); // line 1 visible (rising through the top)
+  assert(!early.calls.some((c) => c[0] === 'rect' && isBar(c)), 'no bar while a line is on screen');
+
+  // Middle of the empty window [2000, 28000]: frac(15500) ≈ 0.52.
+  const mid = makeFakeCtx(40);
+  renderFrame(mid.ctx, 15500, p);
+  const midBar = mid.calls.filter((c) => c[0] === 'rect' && isBar(c));
+  assert(midBar.length === 1, `one bar clip mid-window (got ${midBar.length})`);
+  assert(midBar[0][3] > 500 && midBar[0][3] < 1100, `≈half-filled width (got ${midBar[0]?.[3]})`);
+
+  // Just before the next line enters from the bottom → the bar is complete.
+  const end = makeFakeCtx(40);
+  renderFrame(end.ctx, 27800, p);
+  const endBar = end.calls.filter((c) => c[0] === 'rect' && isBar(c));
+  assert(endBar.length === 1 && endBar[0][3] > 1400, `full bar before the entrance (got ${endBar[0]?.[3]})`);
+
+  // Once the next line has entered → no bar anymore.
+  const after = makeFakeCtx(40);
+  renderFrame(after.ctx, 28500, p);
+  assert(!after.calls.some((c) => c[0] === 'rect' && isBar(c)), 'no bar once the next line is visible');
+
+  // Dense lyrics (text always on screen) → never any bar.
+  const dense = JSON.parse(JSON.stringify(p));
+  dense.tracks[0].lines = [
+    { syllables: [{ text: 'А', startMs: 0 }] },
+    { syllables: [{ text: 'Б', startMs: 3000 }] },
+  ];
+  const none = makeFakeCtx(40);
+  renderFrame(none.ctx, 1500, dense);
+  assert(!none.calls.some((c) => c[0] === 'rect' && isBar(c)), 'no bar for dense lines');
+
+  // gapBarSec = 0 disables the indicator entirely.
+  const off = JSON.parse(JSON.stringify(p));
+  off.tracks[0].rendererSettings = { scroller: { previewSec: 2, gapBarSec: 0 } };
+  const offCtx = makeFakeCtx(40);
+  renderFrame(offCtx.ctx, 15500, off);
+  assert(!offCtx.calls.some((c) => c[0] === 'arcTo'), 'no rounded bar when disabled');
 });

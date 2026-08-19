@@ -193,3 +193,58 @@ export function drawSyllable(
 
   ctx.restore();
 }
+
+// --- Pause indicator ("gap bar") ---
+// During a long instrumental pause (line ended, next line far away) a wide
+// one-line-tall bar fills left-to-right and completes exactly when the next
+// line begins — the singer sees when to prepare (KaraFun-style).
+
+/**
+ * Draw the pause bar: a full-screen-width track of ~one line height at the
+ * vertical center, filling left-to-right with the style's highlight color.
+ * Returns true when a bar was drawn (the caller may skip other overlays).
+ */
+export function drawGapBar(
+  ctx: RenderCtx,
+  env: { style: TextStyle; width: number; height: number },
+  gap: { from: number; to: number },
+  timeMs: number,
+): boolean {
+  const frac = Math.max(0, Math.min(1, (timeMs - gap.from) / Math.max(1, gap.to - gap.from)));
+  const cy = env.height / 2;
+  const h = Math.max(6, env.style.fontSize * 0.5);
+  const marginX = env.width * 0.08;
+  const x = marginX;
+  const w = env.width - marginX * 2;
+  ctx.save();
+  // Track: a subtle outlined pill.
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+  ctx.lineWidth = Math.max(1, env.style.strokeWidth / 2);
+  roundedRectPath(ctx, x, cy - h / 2, w, h, h / 2);
+  ctx.fill();
+  ctx.stroke();
+  // Fill: left-to-right in the active highlight color.
+  if (frac > 0) {
+    ctx.beginPath();
+    ctx.rect(x, cy - h / 2, w * frac, h);
+    ctx.clip();
+    ctx.fillStyle = env.style.colorHighlight;
+    roundedRectPath(ctx, x, cy - h / 2, w, h, h / 2);
+    ctx.fill();
+  }
+  ctx.restore();
+  return true;
+}
+
+/** Rounded-rect path helper (does not stroke/fill by itself). */
+function roundedRectPath(ctx: RenderCtx, x: number, y: number, w: number, h: number, r: number): void {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
