@@ -1,3 +1,4 @@
+import { createEta } from '../lib/eta';
 /**
  * Export dialog (modal) with format tabs.
  *
@@ -21,6 +22,23 @@ export interface ExportChoice {
   qualityId: string;
   /** MP4 frame rate (only meaningful when format is 'mp4'). */
   fps: number;
+  /**
+   * MP4 stem mix override (only meaningful for 'mp4'): which vocal/instrument
+   * stems go into the rendered audio. Defaults mirror the project's current
+   * mute/solo state at dialog open; the user may flip roles per-export
+   * without touching the project (e.g. drop the lead, keep back+minus).
+   */
+  stems: { lead: boolean; minus: boolean; back: boolean };
+}
+
+/** One checkbox row in the MP4 stem mix group. */
+export interface ExportStemOption {
+  role: 'lead' | 'minus' | 'back';
+  label: string;
+  /** Whether the role has audio loaded (unchecked roles can't be included). */
+  loaded: boolean;
+  /** Initial state — the project's current mute/solo audibility. */
+  audible: boolean;
 }
 
 export interface ExportDialog {
@@ -39,7 +57,11 @@ export interface ExportDialog {
  * sees compatibility issues (too many tracks, clamped stroke, …) before export.
  * `initialFps` preselects the FPS dropdown in the Video tab.
  */
-export function openExportDialog(kfnWarnings: string[], initialFps: number): ExportDialog {
+export function openExportDialog(
+  kfnWarnings: string[],
+  initialFps: number,
+  stemOptions: ExportStemOption[] = [],
+): ExportDialog {
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop';
 
@@ -130,6 +152,34 @@ export function openExportDialog(kfnWarnings: string[], initialFps: number): Exp
   fpsField.appendChild(fpsSelect);
   mp4Body.appendChild(fpsField);
 
+  // Stem mix: what goes into the rendered audio (defaults = mute/solo state).
+  const stemChecks: Array<{ opt: ExportStemOption; input: HTMLInputElement }> = [];
+  if (stemOptions.length > 0) {
+    const stemField = document.createElement('div');
+    stemField.className = 'field';
+    const stemLabel = document.createElement('span');
+    stemLabel.textContent = 'Стемы в звуке';
+    stemField.appendChild(stemLabel);
+    const row = document.createElement('div');
+    row.className = 'export-stems';
+    for (const opt of stemOptions) {
+      const lab = document.createElement('label');
+      lab.className = 'export-stem';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.testid = `export-stem-${opt.role}`;
+      input.checked = opt.loaded && opt.audible;
+      input.disabled = !opt.loaded;
+      lab.appendChild(input);
+      lab.appendChild(document.createTextNode(opt.label));
+      if (!opt.loaded) lab.classList.add('disabled');
+      row.appendChild(lab);
+      stemChecks.push({ opt, input });
+    }
+    stemField.appendChild(row);
+    mp4Body.appendChild(stemField);
+  }
+
   const mp4Hint = document.createElement('div');
   mp4Hint.className = 'hint';
   mp4Hint.textContent = 'Чем выше качество — тем больше файл и дольше рендер.';
@@ -187,8 +237,11 @@ export function openExportDialog(kfnWarnings: string[], initialFps: number): Exp
   const pct = document.createElement('div');
   pct.className = 'progress-pct';
   pct.textContent = '0%';
+  const eta = document.createElement('span');
+  eta.className = 'progress-eta';
   progressWrap.appendChild(bar);
   progressWrap.appendChild(pct);
+  progressWrap.appendChild(eta);
   body.appendChild(progressWrap);
   modal.appendChild(body);
 
@@ -262,14 +315,26 @@ export function openExportDialog(kfnWarnings: string[], initialFps: number): Exp
     cancelBtn.textContent = 'Отменить';
     title.textContent =
       format === 'mp4' ? 'Рендеринг видео…' : format === 'kfn' ? 'Сборка KaraFun…' : 'Сохранение проекта…';
-    if (resolveChoice) resolveChoice({ format, qualityId: qualitySelect.value, fps: parseInt(fpsSelect.value, 10) });
+    if (resolveChoice)
+      resolveChoice({
+        format,
+        qualityId: qualitySelect.value,
+        fps: parseInt(fpsSelect.value, 10),
+        stems: {
+          lead: stemChecks.find((s) => s.opt.role === 'lead')?.input.checked ?? false,
+          minus: stemChecks.find((s) => s.opt.role === 'minus')?.input.checked ?? false,
+          back: stemChecks.find((s) => s.opt.role === 'back')?.input.checked ?? false,
+        },
+      });
   };
 
+  const etaEst = createEta();
   const setProgress = (fraction: number): void => {
     if (!rendering) start(); // first progress tick flips into rendering state
     const f = Math.max(0, Math.min(1, fraction));
     fill.style.width = `${Math.round(f * 100)}%`;
     pct.textContent = `${Math.round(f * 100)}%`;
+    eta.textContent = f > 0.02 ? `осталось ${etaEst.update(f) ?? '…'}` : '';
   };
 
   const onKey = (e: KeyboardEvent): void => {

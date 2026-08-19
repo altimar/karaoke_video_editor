@@ -12,7 +12,7 @@ import { importFromKfn } from '../lib/kfnImport';
 import { saveProject, loadProject } from '../lib/projectFile';
 import { getAudioBytesMap, setAudioBytesMap } from '../lib/audioLoader';
 import { loadBgVideo, clearBgVideo, getBgVideoBytes } from '../lib/backgroundVideo';
-import { openExportDialog } from './exportDialog';
+import { openExportDialog, ExportStemOption } from './exportDialog';
 import { openMetadataDialog } from './metadataDialog';
 import { openSettingsDialog } from './settingsDialog';
 import { songBaseName } from '../lib/songTitle';
@@ -173,7 +173,20 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): { root:
     btn.disabled = true;
     // Preview KFN compatibility issues in the dialog's KaraFun tab.
     const kfnWarnings = collectKfnWarnings(project);
-    const dialog = openExportDialog(kfnWarnings, project.fps);
+    // Stem mix state for the MP4 tab: loaded roles, defaults = mute/solo.
+    const stemOptions: ExportStemOption[] = (
+      [
+        { role: 'lead', label: 'Лид-вокал' },
+        { role: 'back', label: 'Бэк-вокал' },
+        { role: 'minus', label: 'Минус' },
+      ] as const
+    ).map(({ role, label }) => ({
+      role,
+      label,
+      loaded: audioEngine.has(role),
+      audible: isRoleAudible(project, role),
+    }));
+    const dialog = openExportDialog(kfnWarnings, project.fps, stemOptions);
     const abort = new AbortController();
 
     // If the user cancels via the dialog (X / backdrop / Cancel / Esc), abort.
@@ -210,19 +223,19 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): { root:
           }
           // Apply the FPS chosen in the dialog (exportToMp4 reads project.fps).
           store.mutate((p) => (p.fps = choice.fps));
-          // Gather decoded buffers per audible role (lead/minus/back) for the mix,
-          // respecting mute/solo. 'original' is always excluded from the export.
-          const proj = store.getProject();
+          // Gather decoded buffers for the roles the dialog's stem checkboxes
+          // selected (defaults mirror mute/solo; the user may override).
+          // 'original' is always excluded from the export.
           const bufByRole = new Map<AudioRole, AudioBuffer>();
-          for (const role of ['lead', 'minus', 'back'] as AudioRole[]) {
-            if (!isRoleAudible(proj, role)) continue;
+          for (const role of ['lead', 'minus', 'back'] as const) {
+            if (!choice.stems[role]) continue;
             const buf = audioEngine.getBuffer(role);
             if (buf) bufByRole.set(role, buf);
           }
           const blob = await exportToMp4(
             store.getProject(),
             bufByRole,
-            { qualityId: choice.qualityId, signal: abort.signal },
+            { qualityId: choice.qualityId, signal: abort.signal, stems: choice.stems },
             (frac) => dialog.setProgress(frac),
           );
           dialog.close();

@@ -5,8 +5,8 @@
  * 3-minute-truncation bug lived in.
  */
 import { test, expect } from '@playwright/test';
-import { makeWavBytes, readBytes, readProjectZip, getKfnImporter } from './helpers';
-import { getAppState, loadAudioIntoRole, exportViaDialog } from './support';
+import { makeWavBytes, makeProjectZip, readBytes, readProjectZip, getKfnImporter } from './helpers';
+import { getAppState, loadAudioIntoRole, exportViaDialog, expectToast } from './support';
 
 // >3 minutes of audio: the export must embed it in full.
 const WAV_SECONDS = 200;
@@ -67,4 +67,26 @@ test('export KFN: downloaded container parses with the app importer, audio in fu
   }, Buffer.from(stored).toString('base64'));
   expect(decodedSec).toBeGreaterThan(WAV_SECONDS - 1);
   expect(decodedSec).toBeLessThan(WAV_SECONDS + 1);
+});
+
+test('MP4 export tab: stem mix checkboxes (drop the lead, keep back+minus)', async ({ page }) => {
+  const WAV_SECONDS = 30;
+  const { bytes } = makeProjectZip(WAV_SECONDS);
+  await page.goto('/');
+  await page.locator('[data-testid="input-open-project"]').setInputFiles({
+    name: 'fixture.karaokeproject', mimeType: 'application/zip', buffer: Buffer.from(bytes),
+  });
+  await expectToast(page, 'ok', 'Проект загружен');
+
+  await page.locator('[data-testid="btn-export"]').click();
+  await page.locator('[data-testid="tab-mp4"]').click();
+  // The fixture loads ONLY minus → minus is on; lead/back are unloaded → disabled.
+  const minus = page.locator('[data-testid="export-stem-minus"]');
+  await expect(minus).toBeChecked();
+  await expect(page.locator('[data-testid="export-stem-lead"]')).toBeDisabled();
+  await expect(page.locator('[data-testid="export-stem-back"]')).toBeDisabled();
+  // Toggling works; cancel closes without exporting.
+  await minus.uncheck();
+  await expect(minus).not.toBeChecked();
+  await page.locator('[data-testid="btn-cancel-export"]').click();
 });

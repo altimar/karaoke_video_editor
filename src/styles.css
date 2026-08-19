@@ -774,6 +774,36 @@ textarea.lyrics {
   padding: 5px 10px;
   font-size: 12px;
 }
+/* Export dialog: the MP4 stem-mix checkbox row. */
+.export-stems {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.export-stem {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.export-stem.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.export-stem input {
+  accent-color: var(--accent);
+}
+
+/* "осталось ~1:23" chip next to a progress percentage. */
+.progress-eta {
+  font-size: 11px;
+  font-family: "SF Mono", "Consolas", monospace;
+  color: var(--text-dim);
+  margin-left: 8px;
+  white-space: nowrap;
+}
+
 /* Player transport: the strip under the preview (play / record / speed). */
 .player-transport {
   display: flex;

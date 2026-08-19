@@ -135,6 +135,12 @@ export interface ExportOptions {
   qualityId: string;
   /** If provided and aborted, the export stops and rejects with ExportCanceledError. */
   signal?: AbortSignal;
+  /**
+   * Stem mix override for the rendered audio: explicit per-role on/off from
+   * the export dialog's checkboxes. Unspecified roles fall back to the
+   * project's mute/solo audibility (isRoleAudible).
+   */
+  stems?: { lead?: boolean; minus?: boolean; back?: boolean };
 }
 
 /** True if this browser can run the WebCodecs-based export. */
@@ -283,7 +289,9 @@ export async function exportToMp4(
     // always excluded — the export is a rendered mix, never the reference track.
     const stems: { buffer: AudioBuffer; points: VolumePoint[] }[] = [];
     for (const role of ['lead', 'minus', 'back'] as AudioRole[]) {
-      if (!isRoleAudible(project, role)) continue;
+      const override = options.stems?.[role as 'lead' | 'minus' | 'back'];
+      if (override === false) continue; // unchecked in the export dialog
+      if (override !== true && !isRoleAudible(project, role)) continue;
       const buf = audioByRole.get(role);
       if (!buf) continue;
       const at = getAudioTrackByRole(project, role);
