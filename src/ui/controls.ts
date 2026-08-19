@@ -5,7 +5,6 @@
  */
 import { store } from '../state/store';
 import { audioEngine } from '../lib/audioEngine';
-import { timingCapture } from '../lib/timing';
 import { exportToMp4, downloadBlob, canExport, ExportCanceledError } from '../lib/export';
 import { invalidateBgImageCache } from '../lib/render';
 import { exportToKfn, collectKfnWarnings } from '../lib/kfnExport';
@@ -17,14 +16,11 @@ import { openExportDialog } from './exportDialog';
 import { openMetadataDialog } from './metadataDialog';
 import { openSettingsDialog } from './settingsDialog';
 import { songBaseName } from '../lib/songTitle';
-import { AudioRole, getAudioTrackByRole, getActiveTextTrack, isRoleAudible, ProjectMetadata } from '../types';
+import { AudioRole, getAudioTrackByRole, isRoleAudible, ProjectMetadata } from '../types';
 
 export type ToastFn = (msg: string, kind?: 'ok' | 'err' | 'info') => void;
 
-export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
-  root: HTMLElement;
-  refreshAudioState: () => void;
-} {
+export function createTopbar(toast: ToastFn, onNewProject?: () => void): { root: HTMLElement } {
   const root = document.createElement('div');
   root.className = 'topbar';
 
@@ -39,41 +35,6 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
   titleWrap.appendChild(logo);
   titleWrap.appendChild(titleText);
   root.appendChild(titleWrap);
-
-  // --- Play / pause ---
-  const playBtn = document.createElement('button');
-  setTopbarButton(playBtn, '▶', 'Пуск');
-  playBtn.dataset.testid = 'btn-play';
-  playBtn.title = 'Пуск / пауза';
-  playBtn.addEventListener('click', () => audioEngine.toggle());
-  root.appendChild(playBtn);
-
-  // --- Record timings ---
-  const recBtn = document.createElement('button');
-  recBtn.className = 'primary';
-  setTopbarButton(recBtn, '●', 'Запись таймингов');
-  recBtn.title = 'Включите воспроизведение и нажимайте Пробел на каждый слог';
-  recBtn.dataset.testid = 'btn-record';
-  recBtn.addEventListener('click', () => {
-    if (timingCapture.isRecording()) {
-      timingCapture.stop();
-    } else if (!getActiveTextTrack(store.getProject())) {
-      toast('Выберите текстовую дорожку для записи таймингов', 'err');
-    } else if (
-      !audioEngine.has('original') &&
-      !audioEngine.has('lead') &&
-      !audioEngine.has('minus') &&
-      !audioEngine.has('back')
-    ) {
-      toast('Сначала загрузите аудио', 'err');
-    } else {
-      // start from beginning if no timings yet
-      timingCapture.start();
-      toast('Запись! Нажимайте Пробел на каждый слог', 'info');
-    }
-    refreshAll();
-  });
-  root.appendChild(recBtn);
 
   // Visual grouping: transport | project | output.
   root.appendChild(topbarSep());
@@ -137,7 +98,6 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
         invalidateBgImageCache();
         toast('Проект загружен', 'ok');
       }
-      refreshAll();
     } catch (err) {
       console.error(err);
       toast('Не удалось открыть файл: ' + (err instanceof Error ? err.message : String(err)), 'err');
@@ -189,34 +149,6 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
   exportBtn.dataset.testid = 'btn-export';
   exportBtn.addEventListener('click', () => onExport(exportBtn));
   root.appendChild(exportBtn);
-
-  function refreshAll(): void {
-    setTopbarButton(playBtn, audioEngine.isPlaying ? '⏸' : '▶', audioEngine.isPlaying ? 'Пауза' : 'Пуск');
-    setTopbarButton(recBtn, timingCapture.isRecording() ? '⏹' : '●', timingCapture.isRecording() ? 'Стоп записи' : 'Запись таймингов');
-    recBtn.classList.toggle('danger', timingCapture.isRecording());
-    // Recording targets the active TEXT track — disable the button when none is
-    // active (so the user must pick a text track first).
-    recBtn.disabled = !timingCapture.isRecording() && !getActiveTextTrack(store.getProject());
-  }
-
-  function refreshAudioState(): void {
-    refreshAll();
-  }
-
-  audioEngine.onAudioState(refreshAll);
-  timingCapture.onState(refreshAll);
-  // Re-evaluate the record button when the active track changes.
-  store.subscribe(refreshAll);
-
-  // Global keyboard: Space toggles play/pause when NOT recording.
-  window.addEventListener('keydown', (e) => {
-    if (e.code !== 'Space') return;
-    if (timingCapture.isRecording()) return; // timing capture owns Space
-    const tag = (e.target as HTMLElement)?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-    e.preventDefault();
-    audioEngine.toggle();
-  });
 
   // --- Export flow: tabbed dialog (Video / Project / KaraFun) → build → download ---
   function onExport(btn: HTMLButtonElement): void {
@@ -321,8 +253,7 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): {
       });
   }
 
-  refreshAll();
-  return { root, refreshAudioState };
+  return { root };
 }
 
 /**

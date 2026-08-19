@@ -7,6 +7,7 @@ import { createTopbar } from './ui/controls';
 import { openNewProjectWizard } from './ui/newProjectWizard';
 import { createLyricsEditor } from './ui/lyricsEditor';
 import { createPreview } from './ui/preview';
+import { createTransport } from './ui/transport';
 import { createStylePanel } from './ui/stylePanel';
 import { createTimeline } from './ui/timeline';
 import { createPropsSheet } from './ui/propsSheet';
@@ -65,10 +66,11 @@ function main(): void {
   left.appendChild(helpCard());
   main.appendChild(left);
 
-  // Center: preview + transport time
+  // Center: preview + the player transport (play/record/speed) right under it.
   const center = document.createElement('div');
   center.className = 'col col-center';
   center.appendChild(preview.wrap);
+  center.appendChild(createTransport(toast).root);
   main.appendChild(center);
 
   // Right: style/effects panel

@@ -44,6 +44,8 @@ class AudioEngine {
   private activeRoles: AudioRole[] = [];
   /** The role used as the time/duration reference. */
   private primaryRole: AudioRole | null = null;
+  /** Playback rate (0.25..2, pitch preserved) — timing capture on fast songs. */
+  private rate = 1;
 
   private audioStateListeners = new Set<AudioStateListener>();
   private timeListeners = new Set<TimeListener>();
@@ -85,6 +87,7 @@ class AudioEngine {
     v.url = URL.createObjectURL(blob);
     v.audio.src = v.url;
     v.audio.load();
+    v.audio.playbackRate = this.rate;
     const arrBuf = (bytes.buffer as ArrayBuffer).slice(0);
     v.buffer = await ctx.decodeAudioData(arrBuf.slice(0));
     // Apply any automation already set on this voice (× mute/solo factor).
@@ -113,6 +116,19 @@ class AudioEngine {
   /** True if a role has audio loaded. */
   has(role: AudioRole): boolean {
     return !!this.voices.get(role)?.buffer;
+  }
+
+  /** Current playback rate (1 = normal; pitch is preserved by the browser). */
+  get playbackRate(): number {
+    return this.rate;
+  }
+
+  /** Set the playback rate for every voice (also applied to voices loaded later). */
+  setPlaybackRate(rate: number): void {
+    this.rate = Math.max(0.25, Math.min(2, rate));
+    for (const v of this.voices.values()) {
+      v.audio.playbackRate = this.rate;
+    }
   }
 
   /** Store a role's volume-automation envelope; gain is applied per RAF tick. */
