@@ -259,6 +259,20 @@ class AudioEngine {
     this.startTimeLoop();
   }
 
+  /**
+   * Pause EVERY loaded voice and reset the active set — used when the whole
+   * project is replaced (open file / restore): playback of the previous
+   * project must not leak into the new one, including roles the new project
+   * doesn't provide.
+   */
+  stopAll(): void {
+    for (const v of this.voices.values()) v.audio.pause();
+    this.activeRoles = [];
+    this.primaryRole = null;
+    this.stopTimeLoop();
+    this.notifyState(false);
+  }
+
   pause(): void {
     for (const r of this.activeRoles) {
       this.voices.get(r)?.audio.pause();

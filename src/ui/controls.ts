@@ -66,6 +66,9 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): { root:
   async function openProjectFile(f: File): Promise<void> {
     try {
       const bytes = new Uint8Array(await f.arrayBuffer());
+      // Replacing the whole project: stop playback of everything first —
+      // the previous project's voices must not leak into the new one.
+      audioEngine.stopAll();
       const isKfn = f.name.toLowerCase().endsWith('.kfn');
       if (isKfn) {
         const result = importFromKfn(bytes);
@@ -73,6 +76,7 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): { root:
           await audioEngine.loadBytes(role, data, role);
         }
         setAudioBytesMap(result.audioByRole);
+        clearRolesAbsentFrom(result.audioByRole);
         // KFN never carries an MP4 background video (KaraFun uses WMV — we
         // don't import it), so reset any previously loaded one.
         clearBgVideo();
@@ -92,6 +96,7 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): { root:
           await audioEngine.loadBytes(role, data, role);
         }
         setAudioBytesMap(result.audioByRole);
+        clearRolesAbsentFrom(result.audioByRole);
         if (result.bgVideoBytes) await loadBgVideo(result.bgVideoBytes);
         else clearBgVideo();
         store.setProject(result.project);
@@ -263,6 +268,13 @@ export function createTopbar(toast: ToastFn, onNewProject?: () => void): { root:
  * separator on desktop; it collapses (trailing whitespace) when the label is
  * hidden, so the icon stays snug.
  */
+/** Unload roles the newly opened project doesn't provide (old audio lingers otherwise). */
+function clearRolesAbsentFrom(audioByRole: Map<AudioRole, Uint8Array>): void {
+  for (const role of ['original', 'lead', 'minus', 'back'] as AudioRole[]) {
+    if (!audioByRole.has(role)) audioEngine.clear(role);
+  }
+}
+
 /** Thin vertical separator between topbar button groups. */
 function topbarSep(): HTMLElement {
   const sep = document.createElement('span');
