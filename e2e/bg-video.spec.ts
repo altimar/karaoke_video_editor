@@ -80,11 +80,15 @@ test('project export embeds the video as background-video.mp4', async ({ page })
   const { project } = readProjectZip(readBytes(path));
   expect(project.background.bgType).toBe('video');
   expect(project.background.bgVideoFileName).toBe('bg-sample.mp4');
-  // Full byte-identical round-trip of the video entry.
+  // The app remuxes the bg video to VIDEO-ONLY on load (strips audio/subtitles,
+  // 94b687c), so the embedded entry is the processed stream — smaller than the
+  // source fixture. Remux correctness itself is unit-tested (bg-video-strip).
   const { unzipSync } = await import('fflate');
   const unzipped = unzipSync(readBytes(path));
-  expect(unzipped['background-video.mp4']).toBeDefined();
-  expect(unzipped['background-video.mp4'].length).toBe(fixtureBytes.length);
+  const embedded = unzipped['background-video.mp4'];
+  expect(embedded).toBeDefined();
+  expect(embedded.length).toBeGreaterThan(1000);
+  expect(embedded.length).toBeLessThan(fixtureBytes.length);
 });
 
 test('KFN export embeds the video as a type=5 file with an ID=62 effect', async ({ page }) => {
