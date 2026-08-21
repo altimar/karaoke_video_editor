@@ -26,7 +26,7 @@ import type { ToastFn } from '../controls';
 import { trackTopForIndex, trackIndexAtY, isBgRowAtY } from './coords';
 import { AudioTool, SyllableSelection, TimelineEnv, TrackDrag, TrackView, selectionBounds } from './types';
 import { textView, pickMarker } from './textView';
-import { audioView } from './audioView';
+import { audioView, clearChunkSelection } from './audioView';
 import { createGutterRenderer } from './gutter';
 import { createTimelineActions } from './actions';
 import { createPainter } from './painter';
@@ -91,7 +91,7 @@ export function createTimeline(
   const editBtn = makeToolBtn(
     'edit',
     'Редактирование',
-    'Инструмент «Редактирование»: перетаскивайте фрагменты звука между аудиодорожками (фраза из бэка — в вокал и т.п.)',
+    'Инструмент «Редактирование»: перетаскивайте фрагменты звука между аудиодорожками (фраза из бэка — в вокал и т.п.); растяните рамку на пустом месте строки, чтобы выделить и перенести несколько фраз сразу',
   );
   toolControls.appendChild(automationBtn);
   toolControls.appendChild(editBtn);
@@ -200,25 +200,28 @@ export function createTimeline(
   // Arrows nudge (±50 ms, Shift = ±10 ms) — the whole range when one is
   // selected, honoring the between-neighbors invariant. Tab/Shift+Tab walk
   // the timed syllables. Del/Backspace removes the selected marker(s) and
-  // shifts the following timings back (the TEXT is never touched); Esc just
-  // deselects. Ignored while typing in an input/textarea.
+  // shifts the following timings back (the TEXT is never touched); Esc
+  // deselects — both the syllable markers and the edit tool's chunk selection.
+  // Ignored while typing in an input/textarea.
   window.addEventListener('keydown', (e) => {
     const k = e.key;
     const relevant =
       k === 'Delete' || k === 'Backspace' || k === 'Escape' ||
       k === 'ArrowLeft' || k === 'ArrowRight' || k === 'Tab';
     if (!relevant) return;
-    const sel = liveSelection();
-    if (!sel) return;
     const el = document.activeElement;
     const editable =
       el instanceof HTMLElement && (['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName) || el.isContentEditable);
-    if (editable) return;
     if (k === 'Escape') {
+      if (editable) return;
       selection = null;
+      clearChunkSelection();
       painter.scheduleDraw();
       return;
     }
+    const sel = liveSelection();
+    if (!sel) return;
+    if (editable) return;
 
     const track = store.getProject().tracks.find((x) => x.id === sel.trackId);
     if (!track || track.type !== 'text') return;
@@ -291,6 +294,9 @@ export function createTimeline(
   function setTool(t: AudioTool): void {
     if (tool === t) return;
     tool = t;
+    // The rubber-band chunk selection belongs to the edit tool — drop it when
+    // switching away (its highlight and grab logic don't apply to automation).
+    if (t !== 'edit') clearChunkSelection();
     automationBtn.classList.toggle('active', tool === 'automation');
     editBtn.classList.toggle('active', tool === 'edit');
     painter.scheduleDraw();

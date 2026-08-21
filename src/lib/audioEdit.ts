@@ -33,12 +33,70 @@ export function isEditableRole(role: AudioRole): boolean {
 }
 
 /**
+ * Pure core: move every [start, end) span (source-rate samples, possibly
+ * several — the multi-chunk batch for the edit tool's rubber-band selection)
+ * out of `from` (zeroed in the copy) and mix each into `to` at the same TIME
+ * position (the destination is zero-extended when shorter; `to === null` =
+ * empty role, the chunks become its first audio). Resamples each chunk
+ * linearly when the rates differ, and maps channel counts (a wider chunk is
+ * averaged down, a narrower one fills the first channels). Spans are sorted,
+ * clamped and emptied of degenerate entries; overlapping spans would simply
+ * double-mix (callers pass disjoint chunks). Never mutates the inputs.
+ */
+export function moveSamplesRanges(
+  from: Float32Array[],
+  to: Float32Array[] | null,
+  spans: Array<[number, number]>,
+  fromRate: number,
+  toRate: number,
+): { from: Float32Array[]; to: Float32Array[] } {
+  const fromLen = from[0]?.length ?? 0;
+  const clamped = spans
+    .map(([s, e]) => [Math.max(0, Math.min(fromLen, s)), Math.max(0, Math.min(fromLen, e))] as [number, number])
+    .filter(([s, e]) => e > s)
+    .sort((a, b) => a[0] - b[0]);
+  if (clamped.length === 0) {
+    return { from: from.map((ch) => ch.slice()), to: to ? to.map((ch) => ch.slice()) : [] };
+  }
+
+  const fromOut = from.map((ch) => ch.slice());
+  for (const [s, e] of clamped) for (const ch of fromOut) ch.fill(0, s, e);
+
+  // Resample every chunk up front: the destination length (and its channel
+  // count when `to === null`) must be known before the output is allocated.
+  const destChCount = to ? to.length : from.length;
+  const destOffsetOf = (s: number): number => Math.round((s / fromRate) * toRate);
+  const chunksRes: Float32Array[][] = [];
+  let outLen = to ? (to[0]?.length ?? 0) : 0;
+  for (const [s, e] of clamped) {
+    const chunk = from.map((ch) => ch.slice(s, e));
+    const chunkRes = fromRate === toRate ? chunk : chunk.map((ch) => resampleLinear(ch, fromRate, toRate));
+    outLen = Math.max(outLen, destOffsetOf(s) + (chunkRes[0]?.length ?? 0));
+    chunksRes.push(chunkRes);
+  }
+  const toOut: Float32Array[] = [];
+  for (let c = 0; c < destChCount; c++) {
+    const arr = new Float32Array(outLen);
+    if (to && to[c]) arr.set(to[c]);
+    toOut.push(arr);
+  }
+  // Map each chunk's channels onto the destination's (averaged when wider).
+  for (let i = 0; i < clamped.length; i++) {
+    const mix = chunksRes[i].length > destChCount ? mixdown(chunksRes[i]) : chunksRes[i];
+    const destOffset = destOffsetOf(clamped[i][0]);
+    for (let c = 0; c < Math.min(mix.length, destChCount); c++) {
+      const dst = toOut[c];
+      const src = mix[c];
+      for (let j = 0; j < src.length; j++) dst[destOffset + j] += src[j];
+    }
+  }
+  return { from: fromOut, to: toOut };
+}
+
+/**
  * Pure core: cut [start, end) (source-rate samples) out of `from` (zeroed in
- * the copy) and mix it into `to` at the same TIME position (the destination is
- * zero-extended when shorter; `to === null` = empty role, the chunk becomes
- * its first audio). Resamples the chunk linearly when the rates differ, and
- * maps channel counts (a wider chunk is averaged down, a narrower one fills
- * the first channels). Never mutates the inputs.
+ * the copy) and mix it into `to` at the same TIME position. A single-span
+ * shorthand for `moveSamplesRanges` (kept as the unit-tested surface).
  */
 export function moveSamples(
   from: Float32Array[],
@@ -48,35 +106,7 @@ export function moveSamples(
   fromRate: number,
   toRate: number,
 ): { from: Float32Array[]; to: Float32Array[] } {
-  const fromLen = from[0]?.length ?? 0;
-  const s = Math.max(0, Math.min(fromLen, start));
-  const e = Math.max(s, Math.min(fromLen, end));
-
-  const fromOut = from.map((ch) => ch.slice());
-  for (const ch of fromOut) ch.fill(0, s, e);
-
-  // The chunk, resampled to the destination rate.
-  const chunk = from.map((ch) => ch.slice(s, e));
-  const chunkRes = fromRate === toRate ? chunk : chunk.map((ch) => resampleLinear(ch, fromRate, toRate));
-  const destOffset = Math.round((s / fromRate) * toRate);
-
-  const destChCount = to ? to.length : chunkRes.length;
-  const destLen = to ? (to[0]?.length ?? 0) : 0;
-  const outLen = Math.max(destLen, destOffset + (chunkRes[0]?.length ?? 0));
-  const toOut: Float32Array[] = [];
-  for (let c = 0; c < destChCount; c++) {
-    const arr = new Float32Array(outLen);
-    if (to && to[c]) arr.set(to[c]);
-    toOut.push(arr);
-  }
-  // Map the chunk's channels onto the destination's (averaged when wider).
-  const mix = chunkRes.length > destChCount ? mixdown(chunkRes) : chunkRes;
-  for (let c = 0; c < Math.min(mix.length, destChCount); c++) {
-    const dst = toOut[c];
-    const src = mix[c];
-    for (let i = 0; i < src.length; i++) dst[destOffset + i] += src[i];
-  }
-  return { from: fromOut, to: toOut };
+  return moveSamplesRanges(from, to, [[start, end]], fromRate, toRate);
 }
 
 /** Linear-interpolation resample between sample rates (good enough for edits). */
@@ -112,15 +142,15 @@ function channelsOf(buffer: AudioBuffer): Float32Array[] {
 }
 
 /**
- * Move [startMs, endMs) of one role's audio into another role (mixed in at the
- * same time position) and reload both roles through the audio pipeline.
- * Returns false (and changes nothing) for invalid moves.
+ * Move several [startMs, endMs) ranges of one role's audio into another role
+ * (each mixed in at the same time position) in ONE batch — a single PCM pass
+ * and a single reload of both roles. The rubber-band multi-selection of the
+ * edit tool lands here. Returns false (and changes nothing) for invalid moves.
  */
-export async function moveChunkToRole(
+export async function moveChunkRangesToRole(
   fromRole: AudioRole,
   toRole: AudioRole,
-  startMs: number,
-  endMs: number,
+  ranges: ReadonlyArray<{ startMs: number; endMs: number }>,
 ): Promise<boolean> {
   if (fromRole === toRole) return false;
   if (!isEditableRole(fromRole) || !isEditableRole(toRole)) return false;
@@ -130,11 +160,25 @@ export async function moveChunkToRole(
   const fromRate = fromBuf.sampleRate;
   const toRate = toBuf?.sampleRate ?? fromRate;
 
-  const s = Math.max(0, Math.round((startMs / 1000) * fromRate));
-  const e = Math.min(fromBuf.length, Math.round((endMs / 1000) * fromRate));
-  if (e <= s) return false;
+  const spans = ranges
+    .map(
+      (r) =>
+        [
+          Math.max(0, Math.round((r.startMs / 1000) * fromRate)),
+          Math.min(fromBuf.length, Math.round((r.endMs / 1000) * fromRate)),
+        ] as [number, number],
+    )
+    .filter(([s, e]) => e > s)
+    .sort((a, b) => a[0] - b[0]);
+  if (spans.length === 0) return false;
 
-  const { from, to } = moveSamples(channelsOf(fromBuf), toBuf ? channelsOf(toBuf) : null, s, e, fromRate, toRate);
+  const { from, to } = moveSamplesRanges(
+    channelsOf(fromBuf),
+    toBuf ? channelsOf(toBuf) : null,
+    spans,
+    fromRate,
+    toRate,
+  );
 
   // Keep each role's filename (the destination of an empty slot inherits the
   // source's — the audio in it now comes from that stem).
@@ -150,4 +194,18 @@ export async function moveChunkToRole(
   audioEngine.seek(Math.min(pos, audioEngine.durationMs));
   if (wasPlaying) void audioEngine.play();
   return true;
+}
+
+/**
+ * Move [startMs, endMs) of one role's audio into another role (mixed in at the
+ * same time position) and reload both roles through the audio pipeline — the
+ * single-chunk shorthand for `moveChunkRangesToRole`.
+ */
+export async function moveChunkToRole(
+  fromRole: AudioRole,
+  toRole: AudioRole,
+  startMs: number,
+  endMs: number,
+): Promise<boolean> {
+  return moveChunkRangesToRole(fromRole, toRole, [{ startMs, endMs }]);
 }

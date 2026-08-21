@@ -35,6 +35,24 @@ export function selectionBounds(sel: SyllableSelection): [number, number] {
   return [Math.min(sel.anchorFlat, sel.focusFlat), Math.max(sel.anchorFlat, sel.focusFlat)];
 }
 
+/** One time span [startMs, endMs) — the same convention as audio chunks. */
+export interface MsRange {
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * A committed rubber-band selection of audio chunks (edit tool): the ranges of
+ * the chunks a marquee stretch intersected on one track. Grabbing ANY selected
+ * chunk drags the whole selection. Lives as module state inside audioView; the
+ * orchestrator only clears it (Esc / leaving the edit tool) via
+ * `clearChunkSelection`.
+ */
+export interface ChunkSelection {
+  trackId: string;
+  ranges: MsRange[];
+}
+
 /**
  * Everything a track view needs to draw / hit-test one frame, independent of
  * the concrete track kind. Provided by the orchestrator per draw / pointer
@@ -91,13 +109,30 @@ export type TrackDrag =
     }
   | { kind: 'volume'; trackIndex: number; timeMs: number; moved: boolean }
   | {
-      /** A detected sound chunk of an audio track, dragged to another role. */
+      /** A detected sound chunk of an audio track, dragged to another role.
+       *  `ranges` is set when a whole committed multi-selection is dragged:
+       *  every range moves on drop (startMs/endMs = the selection's union). */
       kind: 'chunk';
       trackIndex: number;
       /** Index into the source buffer's chunk list (at claim time). */
       chunkIndex: number;
       startMs: number;
       endMs: number;
+      ranges?: MsRange[];
+      moved: boolean;
+    }
+  | {
+      /** Rubber-band selection on the active audio row (edit tool): the frame
+       *  stretches with the pointer; on release the chunks it intersected
+       *  become the selection. A press without movement is a click — it clears
+       *  the selection and seeks (the historical empty-row behavior). */
+      kind: 'marquee';
+      trackIndex: number;
+      /** Frame corners in content space; x1/y1 follow the pointer. */
+      x0: number;
+      y0: number;
+      x1: number;
+      y1: number;
       moved: boolean;
     };
 

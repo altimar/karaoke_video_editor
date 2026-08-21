@@ -1,10 +1,10 @@
 /**
  * Stem-editing primitives: chunk detection by relative silence (audioChunks)
- * and the pure PCM move core (audioEdit.moveSamples).
+ * and the pure PCM move core (audioEdit.moveSamples / moveSamplesRanges).
  */
 import { test } from 'vitest';
 import { detectChunksMs, chunkAtMs } from '../src/lib/audioChunks';
-import { moveSamples } from '../src/lib/audioEdit';
+import { moveSamples, moveSamplesRanges } from '../src/lib/audioEdit';
 
 const assert = (cond: unknown, msg: string): void => {
   if (!cond) throw new Error(msg);
@@ -113,4 +113,52 @@ test('moveSamples: wider chunk is averaged down into a narrower destination', ()
   const { to: t } = moveSamples([L, R], mono, 0, 400, 1000, 1000);
   assert(t.length === 1, 'mono destination stays mono');
   assert(close(t[0][200], 0.2 + 0.3), 'mono gets the (0.5+0.1)/2 average + its own 0.2');
+});
+
+// --- moveSamplesRanges (the rubber-band multi-chunk batch) ---
+
+test('moveSamplesRanges: moves two disjoint spans in one pass', () => {
+  const from = [new Float32Array(1000).fill(0.5)];
+  const to = [new Float32Array(1000).fill(0.1)];
+  const { from: f, to: t } = moveSamplesRanges(from, to, [[200, 300], [600, 800]], 1000, 1000);
+  assert(f[0][250] === 0 && f[0][700] === 0, 'both spans zeroed in the source');
+  assert(f[0][150] === 0.5 && f[0][500] === 0.5 && f[0][900] === 0.5, 'outside both spans untouched');
+  assert(close(t[0][250], 0.6) && close(t[0][700], 0.6), 'both spans mixed in place');
+  assert(close(t[0][500], 0.1), 'destination between the spans untouched');
+});
+
+test('moveSamplesRanges: equals sequential single-span moves', () => {
+  const src = () => [Float32Array.from({ length: 1000 }, (_, i) => Math.sin(i / 50) * 0.5)];
+  const spans: Array<[number, number]> = [
+    [100, 250],
+    [400, 900],
+  ];
+  const batch = moveSamplesRanges(src(), [new Float32Array(1000).fill(0.1)], spans, 1000, 1000);
+  let f = src();
+  let t = [new Float32Array(1000).fill(0.1)];
+  for (const [s, e] of spans) {
+    const r = moveSamples(f, t, s, e, 1000, 1000);
+    f = r.from;
+    t = r.to;
+  }
+  for (let i = 0; i < 1000; i++) {
+    assert(close(batch.from[0][i], f[0][i], 1e-6), `from[${i}] differs`);
+    assert(close(batch.to[0][i], t[0][i], 1e-6), `to[${i}] differs`);
+  }
+});
+
+test('moveSamplesRanges: null destination zero-extends to the farthest span', () => {
+  const from = [new Float32Array(1000).fill(0.5)];
+  const { to: t } = moveSamplesRanges(from, null, [[100, 150], [700, 750]], 1000, 1000);
+  assert(t[0].length === 750, 'covers up to the last span');
+  assert(t[0][125] === 0.5 && t[0][725] === 0.5, 'both chunks present');
+  assert(t[0][50] === 0 && t[0][400] === 0, 'silence elsewhere');
+});
+
+test('moveSamplesRanges: degenerate spans are dropped, empty input changes nothing', () => {
+  const from = [new Float32Array(10).fill(0.5)];
+  const to = [new Float32Array(10).fill(0.1)];
+  const { from: f, to: t } = moveSamplesRanges(from, to, [[5, 5], [8, 4]], 1000, 1000);
+  assert(f[0].every((v) => v === 0.5) && t[0].every((v) => close(v, 0.1)), 'plain copies');
+  assert(from[0][5] === 0.5 && close(to[0][5], 0.1), 'inputs untouched');
 });

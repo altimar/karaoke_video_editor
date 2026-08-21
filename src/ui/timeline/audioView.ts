@@ -6,7 +6,9 @@
  *    point) and double-taps (delete a point).
  *  - edit: the envelope is hidden; instead, sound chunks between relative
  *    silences are highlighted on the ACTIVE row, can be hovered and dragged
- *    onto another audio track (onDrop mixes them into that role).
+ *    onto another audio track (onDrop mixes them into that role). A press on
+ *    the empty row stretches a rubber band that selects every chunk it
+ *    intersects; dragging any selected chunk moves the whole selection.
  *
  * All track-type-specific logic for audio lives here. The orchestrator hands it
  * the row position + env (including pre-computed peaks). It never recomputes
@@ -17,14 +19,30 @@ import { audioEngine } from '../../lib/audioEngine';
 import { computePeaks } from '../../lib/waveform';
 import { insertPoint, removePoint, movePoint, clampGain } from '../../lib/volumeAutomation';
 import { AudioChunk, detectChunks, chunkAtMs } from '../../lib/audioChunks';
-import { isEditableRole, moveChunkToRole } from '../../lib/audioEdit';
+import { isEditableRole, moveChunkRangesToRole } from '../../lib/audioEdit';
 import { AudioTrack, Track } from '../../types';
 import { AUDIO_ROW_H, AUDIO_ROW_COLLAPSED_H } from './coords';
-import { Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
+import { ChunkSelection, Ctx, TimelineEnv, TrackDrag, TrackView } from './types';
 
 /** Row height for THIS track right now: tall when active, one line otherwise. */
 function rowH(track: AudioTrack, env: TimelineEnv): number {
   return track.id === env.activeTrackId ? AUDIO_ROW_H : AUDIO_ROW_COLLAPSED_H;
+}
+
+/** Committed rubber-band chunk selection (edit tool), as module state — the
+ *  orchestrator only resets it (Esc, leaving the tool) via
+ *  `clearChunkSelection`. Ranges are time-based, so nothing can dangle: after
+ *  a finished move the source's re-detected chunks simply no longer match. */
+let chunkSelection: ChunkSelection | null = null;
+
+/** Drop the rubber-band selection (Esc, switching away from the edit tool). */
+export function clearChunkSelection(): void {
+  chunkSelection = null;
+}
+
+/** Does a [startMs, endMs] span intersect any of the selection's ranges? */
+function selectionTouches(sel: ChunkSelection, startMs: number, endMs: number): boolean {
+  return sel.ranges.some((r) => startMs <= r.endMs && r.startMs <= endMs);
 }
 
 export const audioView: TrackView<AudioTrack> = {
@@ -97,9 +115,11 @@ export const audioView: TrackView<AudioTrack> = {
     if (track.id !== env.activeTrackId) return null;
     const ti = indexOfTrack(track);
     if (ti < 0) return null;
-    // Edit tool: grab a detected sound chunk of the active editable row. The
-    // hit zone is the chunk's own rectangle (the row's vertical span at the
-    // chunk's time range) — clicks elsewhere on the canvas stay free for seek.
+    // Edit tool: grab a detected sound chunk of the active editable row, or
+    // start a rubber band on its empty space. A chunk's hit zone is its own
+    // rectangle (the row's vertical span at the chunk's time range); empty
+    // space stretches a selection frame — a no-move release stays a click
+    // (clear + seek), so seeking behavior is unchanged.
     if (env.tool === 'edit') {
       if (y < rowY || y > rowY + AUDIO_ROW_H) return null;
       if (!isEditableRole(track.role)) return null;
@@ -107,9 +127,25 @@ export const audioView: TrackView<AudioTrack> = {
       if (!buf) return null;
       const chunks = detectChunks(buf);
       const ci = chunkAtMs(chunks, env.xToMs(x));
-      if (ci < 0) return null;
-      const c = chunks[ci];
-      return { kind: 'chunk', trackIndex: ti, chunkIndex: ci, startMs: c.startMs, endMs: c.endMs, moved: false };
+      if (ci >= 0) {
+        const c = chunks[ci];
+        // Grabbing a chunk of the committed selection drags the WHOLE
+        // selection: every range moves on drop (startMs/endMs = the union).
+        const sel = chunkSelection?.trackId === track.id ? chunkSelection : null;
+        if (sel && selectionTouches(sel, c.startMs, c.endMs)) {
+          return {
+            kind: 'chunk',
+            trackIndex: ti,
+            chunkIndex: ci,
+            startMs: sel.ranges[0].startMs,
+            endMs: sel.ranges[sel.ranges.length - 1].endMs,
+            ranges: sel.ranges,
+            moved: false,
+          };
+        }
+        return { kind: 'chunk', trackIndex: ti, chunkIndex: ci, startMs: c.startMs, endMs: c.endMs, moved: false };
+      }
+      return { kind: 'marquee', trackIndex: ti, x0: x, y0: y, x1: x, y1: y, moved: false };
     }
     const midY = rowY + AUDIO_ROW_H / 2;
     for (const p of track.volumeAutomation) {
@@ -145,7 +181,14 @@ export const audioView: TrackView<AudioTrack> = {
   },
 
   onDrag(drag, rowY, x, y, env: TimelineEnv): void {
-    // A chunk drag has no live model mutation — the move happens on drop.
+    // A rubber band just stretches (the selection commits on release); a chunk
+    // drag has no live model mutation either — the move happens on drop.
+    if (drag.kind === 'marquee') {
+      drag.x1 = x;
+      drag.y1 = y;
+      drag.moved = drag.moved || Math.max(Math.abs(x - drag.x0), Math.abs(y - drag.y0)) > 3;
+      return;
+    }
     if (drag.kind === 'chunk') {
       drag.moved = true;
       return;
@@ -179,14 +222,40 @@ export const audioView: TrackView<AudioTrack> = {
     });
   },
 
-  onDrop(drag, targetTrack): void {
+  onDrop(drag, targetTrack, env): void {
+    // Rubber-band release: commit the chunks the frame intersected. A no-move
+    // press is a plain click — clear the selection and seek (the row's
+    // historical empty-space behavior).
+    if (drag.kind === 'marquee') {
+      if (!drag.moved) {
+        chunkSelection = null;
+        const px = env.pointer?.x;
+        if (px !== undefined) audioEngine.seek(env.xToMs(px));
+        return;
+      }
+      const src = store.getProject().tracks[drag.trackIndex];
+      if (!src || src.type !== 'audio' || !isEditableRole(src.role)) return;
+      const buf = audioEngine.getBuffer(src.role);
+      if (!buf) return;
+      const lo = Math.max(0, Math.min(env.xToMs(drag.x0), env.xToMs(drag.x1)));
+      const hi = Math.max(env.xToMs(drag.x0), env.xToMs(drag.x1));
+      const ranges = detectChunks(buf)
+        .filter((c) => c.startMs <= hi && lo <= c.endMs)
+        .map((c) => ({ startMs: c.startMs, endMs: c.endMs }));
+      chunkSelection = ranges.length > 0 ? { trackId: src.id, ranges } : null;
+      return;
+    }
     if (drag.kind !== 'chunk') return;
     const src = store.getProject().tracks[drag.trackIndex];
     if (!src || src.type !== 'audio') return;
     if (!targetTrack || targetTrack.type !== 'audio') return;
     if (targetTrack.role === src.role) return;
+    // The source buffer is about to be replaced — its committed selection
+    // (whose chunks are moving away) is stale by definition.
+    chunkSelection = null;
+    const ranges = drag.ranges ?? [{ startMs: drag.startMs, endMs: drag.endMs }];
     // Fire-and-forget: the reload redraws both rows when the new audio lands.
-    void moveChunkToRole(src.role, targetTrack.role, drag.startMs, drag.endMs);
+    void moveChunkRangesToRole(src.role, targetTrack.role, ranges);
   },
 };
 
@@ -235,33 +304,59 @@ function drawEnvelope(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEn
 }
 
 /**
- * Edit-tool overlay: movable chunk regions on the ACTIVE audio row + the drop
- * indicator band on the row under the pointer while a chunk drag is active.
+ * Edit-tool overlay: movable chunk regions on the ACTIVE audio row, the live
+ * rubber-band frame + its preview of the chunks being selected, the committed
+ * selection highlight, and the drop indicator bands on the row under the
+ * pointer while a chunk drag is active.
  */
 function drawEditOverlay(ctx: Ctx, track: AudioTrack, rowY: number, env: TimelineEnv, h: number): void {
-  const drag = env.drag?.kind === 'chunk' ? env.drag : null;
-  const srcTrack = drag ? (store.getProject().tracks[drag.trackIndex] as Track | undefined) : undefined;
+  const chunkDrag = env.drag?.kind === 'chunk' ? env.drag : null;
+  const marquee = env.drag?.kind === 'marquee' ? env.drag : null;
+  const dragTrack = (chunkDrag ?? marquee)
+    ? (store.getProject().tracks[(chunkDrag ?? marquee)!.trackIndex] as Track | undefined)
+    : undefined;
 
   // Chunk regions — only on the active editable row with loaded audio.
   if (track.id === env.activeTrackId && isEditableRole(track.role)) {
     const buf = audioEngine.getBuffer(track.role);
     if (buf) {
       const chunks: AudioChunk[] = detectChunks(buf);
+      const sel = chunkSelection?.trackId === track.id ? chunkSelection : null;
       // Hover the chunk under the pointer (only when not dragging).
       let hoverIdx = -1;
       const p = env.pointer;
-      if (!drag && p && p.y >= rowY && p.y <= rowY + h) {
+      if (!chunkDrag && !marquee && p && p.y >= rowY && p.y <= rowY + h) {
         hoverIdx = chunkAtMs(chunks, env.xToMs(p.x));
       }
-      const dragIdx = drag && srcTrack?.id === track.id ? drag.chunkIndex : -1;
+      // Live rubber-band preview: the time span the frame covers so far.
+      let lo = Infinity;
+      let hi = -Infinity;
+      if (marquee && dragTrack?.id === track.id) {
+        lo = Math.max(0, Math.min(env.xToMs(marquee.x0), env.xToMs(marquee.x1)));
+        hi = Math.max(env.xToMs(marquee.x0), env.xToMs(marquee.x1));
+      }
+      const dragIdx = chunkDrag && dragTrack?.id === track.id ? chunkDrag.chunkIndex : -1;
       for (let i = 0; i < chunks.length; i++) {
         const x0 = env.msToX(chunks[i].startMs);
         const x1 = env.msToX(chunks[i].endMs);
         if (x1 < env.scrollLeft - 4 || x0 > env.scrollLeft + env.viewportWidth + 4) continue; // cull
-        if (i === dragIdx) {
+        const dragging =
+          dragIdx === i ||
+          (chunkDrag?.ranges?.some((r) => chunks[i].startMs <= r.endMs && r.startMs <= chunks[i].endMs) ??
+            false);
+        const selected =
+          (sel !== null && selectionTouches(sel, chunks[i].startMs, chunks[i].endMs)) ||
+          (chunks[i].startMs <= hi && lo <= chunks[i].endMs);
+        if (dragging) {
           ctx.fillStyle = 'rgba(110,168,254,0.32)';
           ctx.fillRect(x0, rowY, x1 - x0, h - 1);
           ctx.strokeStyle = '#6ea8fe';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x0 + 0.5, rowY + 0.5, Math.max(1, x1 - x0 - 1), h - 2);
+        } else if (selected) {
+          ctx.fillStyle = 'rgba(110,168,254,0.24)';
+          ctx.fillRect(x0, rowY, x1 - x0, h - 1);
+          ctx.strokeStyle = 'rgba(110,168,254,0.7)';
           ctx.lineWidth = 1;
           ctx.strokeRect(x0 + 0.5, rowY + 0.5, Math.max(1, x1 - x0 - 1), h - 2);
         } else if (i === hoverIdx) {
@@ -275,17 +370,43 @@ function drawEditOverlay(ctx: Ctx, track: AudioTrack, rowY: number, env: Timelin
     }
   }
 
-  // Drop indicator: where the held chunk would land. Valid target = another
-  // editable role (accent); the 'original' row shows a denied band; the source
-  // row itself shows nothing (dropping there is a no-op, not an error).
-  if (drag && env.dropTargetTrackId === track.id && srcTrack && srcTrack.type === 'audio' && srcTrack.role !== track.role) {
-    const valid = isEditableRole(track.role);
-    const x0 = env.msToX(drag.startMs);
-    const x1 = env.msToX(drag.endMs);
-    ctx.fillStyle = valid ? 'rgba(255,225,77,0.22)' : 'rgba(255,92,108,0.18)';
-    ctx.fillRect(x0, rowY, x1 - x0, h - 1);
-    ctx.strokeStyle = valid ? '#ffe14d' : '#ff5c6c';
+  // The rubber-band frame itself (dashed); the stretch follows the pointer
+  // wherever it goes, the press anchor stays where it landed.
+  if (marquee && dragTrack?.id === track.id) {
+    const rx = Math.min(marquee.x0, marquee.x1);
+    const ry = Math.min(marquee.y0, marquee.y1);
+    const rw = Math.abs(marquee.x1 - marquee.x0);
+    const rh = Math.abs(marquee.y1 - marquee.y0);
+    ctx.fillStyle = 'rgba(110,168,254,0.08)';
+    ctx.fillRect(rx, ry, rw, Math.max(1, rh));
+    ctx.strokeStyle = '#6ea8fe';
     ctx.lineWidth = 1;
-    ctx.strokeRect(x0 + 0.5, rowY + 0.5, Math.max(1, x1 - x0 - 1), h - 2);
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(rx + 0.5, ry + 0.5, Math.max(1, rw - 1), Math.max(1, rh - 1));
+    ctx.setLineDash([]);
+  }
+
+  // Drop indicator: where the held chunk(s) would land. Valid target = another
+  // editable role (accent); the 'original' row shows a denied band; the source
+  // row itself shows nothing (dropping there is a no-op, not an error). A
+  // multi-selection draws one band per range.
+  if (
+    chunkDrag &&
+    env.dropTargetTrackId === track.id &&
+    dragTrack &&
+    dragTrack.type === 'audio' &&
+    dragTrack.role !== track.role
+  ) {
+    const valid = isEditableRole(track.role);
+    const ranges = chunkDrag.ranges ?? [{ startMs: chunkDrag.startMs, endMs: chunkDrag.endMs }];
+    for (const r of ranges) {
+      const x0 = env.msToX(r.startMs);
+      const x1 = env.msToX(r.endMs);
+      ctx.fillStyle = valid ? 'rgba(255,225,77,0.22)' : 'rgba(255,92,108,0.18)';
+      ctx.fillRect(x0, rowY, x1 - x0, h - 1);
+      ctx.strokeStyle = valid ? '#ffe14d' : '#ff5c6c';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x0 + 0.5, rowY + 0.5, Math.max(1, x1 - x0 - 1), h - 2);
+    }
   }
 }

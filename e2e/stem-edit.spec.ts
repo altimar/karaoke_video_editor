@@ -1,12 +1,13 @@
 /**
  * Stem editing (timeline edit tool): a phrase wrongly living in one stem can
  * be dragged onto another audio track — the chunk is cut out of the source
- * role and mixed into the target role at the same time position.
+ * role and mixed into the target role at the same time position. A rubber
+ * band (press on empty space + stretch) selects several chunks at once;
+ * dragging any selected chunk moves the whole selection in one batch.
  *
  * Fixtures: two 20 s WAVs with distinct tone bursts — lead has a phrase at
- * 1–2 s, back has phrases at 4–6 s and 9–10 s. The drag moves the back's first
- * phrase (4–6 s) into the lead, verified through the audio engine's decoded
- * buffers (RMS per range).
+ * 1–2 s, back has phrases at 4–6 s and 9–10 s. The drags are verified through
+ * the audio engine's decoded buffers (RMS per range).
  */
 import { test, expect } from '@playwright/test';
 import { loadAudioIntoRole } from './support';
@@ -113,6 +114,60 @@ test('edit tool: dragging a phrase chunk moves it between audio tracks', async (
   expect(await rmsInRange(page, 'back', 9, 10)).toBeGreaterThan(0.1);
   await expect
     .poll(async () => rmsInRange(page, 'lead', 4, 6), { timeout: 30_000 })
+    .toBeGreaterThan(0.1);
+  expect(await rmsInRange(page, 'lead', 1, 2)).toBeGreaterThan(0.1);
+});
+
+test('edit tool: rubber band selects many chunks, one drag moves them all', async ({ page }) => {
+  const SECONDS = 20;
+  await page.goto('/');
+  // Same fixtures as above: lead has 1–2 s, back has 4–6 s and 9–10 s.
+  await loadAudioIntoRole(page, 'lead', makeBurstWav(SECONDS, [[1, 2]]), 'lead.wav');
+  await loadAudioIntoRole(page, 'back', makeBurstWav(SECONDS, [[4, 6], [9, 10]]), 'back.wav');
+  await expect
+    .poll(async () => rmsInRange(page, 'back', 4, 6), { timeout: 30_000 })
+    .toBeGreaterThan(0.1);
+  await expect
+    .poll(async () => rmsInRange(page, 'back', 9, 10), { timeout: 30_000 })
+    .toBeGreaterThan(0.1);
+
+  await page.locator('[data-testid="tl-tool-edit"]').click();
+
+  const canvas = await page.locator('.timeline-canvas').boundingBox();
+  const backHead = await page.locator('[data-testid="track-head-back"]').boundingBox();
+  const leadHead = await page.locator('[data-testid="track-head-lead"]').boundingBox();
+  expect(canvas && backHead && leadHead).toBeTruthy();
+  const xAt = (s: number) => canvas!.x + (s / SECONDS) * canvas!.width;
+  const yBack = backHead!.y + backHead!.height / 2;
+  const yLead = leadHead!.y + leadHead!.height / 2;
+
+  // 1) Rubber band: press in the silence at 3 s, stretch across BOTH back
+  //    phrases, release — they become the selection.
+  await page.mouse.move(xAt(3), yBack);
+  await page.mouse.down();
+  await page.mouse.move(xAt(9.5), yBack, { steps: 8 });
+  await page.mouse.up();
+
+  // 2) Grab any selected chunk (the one at 5 s) and drop it on the lead row —
+  //    the WHOLE selection moves in one batch.
+  await page.mouse.move(xAt(5), yBack);
+  await page.mouse.down();
+  await page.mouse.move(xAt(5), yLead, { steps: 12 });
+  await page.mouse.up();
+
+  // Both phrases left back (silence at 4–6 and 9–10) and landed in lead at the
+  // same positions (lead's own 1–2 s phrase intact).
+  await expect
+    .poll(async () => rmsInRange(page, 'back', 4, 6), { timeout: 30_000 })
+    .toBeLessThan(0.005);
+  await expect
+    .poll(async () => rmsInRange(page, 'back', 9, 10), { timeout: 30_000 })
+    .toBeLessThan(0.005);
+  await expect
+    .poll(async () => rmsInRange(page, 'lead', 4, 6), { timeout: 30_000 })
+    .toBeGreaterThan(0.1);
+  await expect
+    .poll(async () => rmsInRange(page, 'lead', 9, 10), { timeout: 30_000 })
     .toBeGreaterThan(0.1);
   expect(await rmsInRange(page, 'lead', 1, 2)).toBeGreaterThan(0.1);
 });
